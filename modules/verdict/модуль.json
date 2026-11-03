@@ -1,0 +1,9 @@
+{
+  "id": "verdict",
+  "name": "Вердикты",
+  "version": "1.0.0",
+  "api": 1,
+  "kind": "json",
+  "enabled": true,
+  "настройки": {}
+}

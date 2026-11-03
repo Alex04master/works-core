@@ -1,0 +1,19 @@
+# works-core .gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+
+# Project data
+данные/
+*.log
+
+# Temp / test
+_*
+_temp/
+
+# OS
+Thumbs.db
+.DS_Store
