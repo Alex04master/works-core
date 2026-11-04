@@ -105,6 +105,8 @@ try:
     chk("task: plan widget iframe", 'src="/plan/%s"' % tid in tp)
     chk("task: submit copies plan draft", "wcplan_" in tp)
     chk("task: shlei table widget", "shlei-tbl" in tp and 'name="loops"' in tp)
+    chk("task: single drag&drop file field",
+        tp.count('type="file"') == 1 and "dnd-zone" in tp and "dnd-list" in tp)
     pp = curl("-b", "_e2e_s1.txt", "http://localhost:8093/plan/%s" % tid)
     chk("plan widget page", "wcplan_" in pp and "СЦ-01" in pp
         and "legend" in pp and "RO=false" in pp)
@@ -147,6 +149,11 @@ try:
               "-d", "kit=Больница_день_ОПС",
               "http://localhost:8093/staff/scenarios/repair")
     chk("repair runs", rr.startswith("ok:"))
+    spg = curl("-b", "_e2e_staff.txt", "http://localhost:8093/staff/scenarios")
+    chk("scenarios page: repair-all button", "repair_all" in spg)
+    ra = curl("-b", "_e2e_staff.txt", "-X", "POST",
+              "http://localhost:8093/staff/scenarios/repair_all")
+    chk("repair-all runs", ra.startswith("ok:"))
     files = [f for f in glob.glob("_scntest/*.json")
              if not os.path.basename(f).startswith("_")]
     db = json.loads(io.open(files[0], encoding="utf-8").read())

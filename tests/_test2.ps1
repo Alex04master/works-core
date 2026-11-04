@@ -199,6 +199,9 @@ try {
   Chk 'repair button shown' ($rp -match 'scenarios/repair')
   $rr = curl.exe -s -b "$PWD\_staff.txt" -d "course=c1" -d 'kit=_smoketest_kit' 'http://localhost:8099/staff/scenarios/repair'
   Chk 'repair runs' ($rr -match 'ok:')
+  Chk 'repair-all button shown' ($rp -match 'repair_all')
+  $ra = curl.exe -s -b "$PWD\_staff.txt" -X POST 'http://localhost:8099/staff/scenarios/repair_all'
+  Chk 'repair-all runs' ($ra -match 'ok:')
   $sp4 = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
   Chk 'repair keeps form intact' ($sp4 -match 'name="plan_data"')
   curl.exe -s -b "$PWD\_staff.txt" -d "task=$scnTid" -d 'all=on' 'http://localhost:8099/staff/task_issue' | Out-Null
@@ -252,6 +255,9 @@ try {
   # ---- shlei table ----
   $tp5 = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
   Chk 'shlei table on task page' ($tp5 -match 'shlei-tbl' -and $tp5 -match 'name="loops"')
+  Chk 'dnd upload field on task page' ($tp5 -match 'dnd-zone')
+  $nfi = ([regex]::Matches($tp5, 'type=.file.')).Count
+  if ($nfi -eq 1) { Write-Output 'OK   single file input (dropzone)' } else { Write-Output ('FAIL single file input: ' + $nfi); $script:fail++ }
   curl.exe -s -b "$PWD\_ck.txt" -F "task=$scnTid" -F 'calc=ok' -F 'loops=<tests\_loops.json' -F 'firmware=@tests\_fw1.bin' -F 'firmware=@tests\_fw2.bin' 'http://localhost:8099/api/submit' | Out-Null
   python -X utf8 tests\_chk_loops.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   shlei data stored' } else { Write-Output 'FAIL shlei data stored'; $script:fail++ }

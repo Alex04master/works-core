@@ -161,6 +161,13 @@ def register(ctx):
                 '<p><label>Курс: <select name="course">%s</select></label></p>'
                 '<p><button>Импортировать как занятие</button></p>'
                 '</form></div>') % (_e(k), mark, _e(k), opts)
+        rall = ""
+        if any(isinstance(v, dict) and v for v in imported.values()):
+            rall = ('<form method="post" '
+                    'action="/staff/scenarios/repair_all" style="display:inline">'
+                    '<button class="btn-sm btn-secondary" title="Обновить '
+                    'материалы, форму и привязку плана у всех импортированных '
+                    'занятий">🔄 Обновить все сценарии</button></form>')
         js = """<script>
 function _imp(f){
   var kit=f.kit.value, cid=f.course.value;
@@ -203,7 +210,7 @@ function _imp(f){
                 'cards.js + plans.js). Модуль создаст занятие: материалы '
                 'комплекта увидят студенты курса, по каждой карточке сценария '
                 'будет задание (отчёт — один на бригаду). План преподавателя '
-                'и эталоны не копируются.</p></div>' + cards + js)
+                'и эталоны не копируются.</p>' + rall + '</div>' + cards + js)
         return ctx.render_page("Сценарии УП", body, staff=True)
 
     # ── Файлы комплекта для страницы импорта (только преподаватель) ──
@@ -223,19 +230,15 @@ function _imp(f){
         handler._send_response(200, mime, data, encode=False)
         return handler._SENT
 
-    # ── Починка ранее импортированного занятия ──────────────────────
-    @ctx.add_route("POST", "/staff/scenarios/repair", access="staff")
-    def repair_kit(handler, params):
-        data = handler._parse_post()
-        cid = data.get("course", "")
-        kit = _safe_name(data.get("kit", ""))
+    def _repair_one(cid, kit):
+        """Обновить занятие, импортированное из комплекта: материалы,
+        привязка плана, поля формы. Возвращает (ok, заданий, причина)."""
         imported = ctx.kv_load("scenarios", {})
         info = imported.get(cid, {}) if isinstance(imported.get(cid), dict) else {}
         lid = (info.get(kit) or {}).get("lid", "")
         lesson = ctx.get_lesson(lid) if lid else None
         if not lesson:
-            handler._send_text(400, "not imported")
-            return handler._SENT
+            return False, 0, "занятие не найдено"
         lesson["материалы"] = [
             m for m in (lesson.get("материалы") or [])
             if str(m.get("имя", "")).startswith(("02_", "05_", "06_"))]
@@ -271,10 +274,47 @@ function _imp(f){
         ctx.save()
         ctx.kv_save("scenarios", imported)
         ctx.log("починен импорт %s/%s: заданий %d" % (cid, kit, n))
+        return True, n, ""
+
+    # ── Починка ранее импортированного занятия ──────────────────────
+    @ctx.add_route("POST", "/staff/scenarios/repair", access="staff")
+    def repair_kit(handler, params):
+        data = handler._parse_post()
+        cid = data.get("course", "")
+        kit = _safe_name(data.get("kit", ""))
+        ok, n, why = _repair_one(cid, kit)
+        if not ok:
+            handler._send_text(400, "not imported")
+            return handler._SENT
         ctx.audit("обновлён импорт сценария",
                   {"комплект": kit, "курс": cid, "заданий": n},
                   handler=handler)
         handler._send_text(200, "ok:%d" % n)
+        return handler._SENT
+
+    # ── Починка сразу всех импортированных занятий ──────────────────
+    @ctx.add_route("POST", "/staff/scenarios/repair_all", access="staff")
+    def repair_all_kits(handler, params):
+        imported = ctx.kv_load("scenarios", {})
+        pairs = []
+        for cid, info in imported.items():
+            if isinstance(info, dict):
+                for kit in info:
+                    pairs.append((cid, kit))
+        pairs.sort()
+        good, bad, parts = 0, 0, []
+        for cid, kit in pairs:
+            ok, n, why = _repair_one(cid, kit)
+            if ok:
+                good += 1
+                parts.append("%s / %s — заданий %d" % (cid, kit, n))
+            else:
+                bad += 1
+                parts.append("%s / %s — %s" % (cid, kit, why))
+        ctx.audit("обновлены все сценарии",
+                  {"обновлено": good, "ошибок": bad}, handler=handler)
+        handler._send_text(200, "ok:%d (ошибок: %d) %s"
+                           % (good, bad, "; ".join(parts)))
         return handler._SENT
 
     # ── Импорт: занятие + задания по карточкам ──────────────────────

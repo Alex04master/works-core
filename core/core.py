@@ -194,6 +194,64 @@ SHLEI_JS = """<script>
 </script>"""
 
 
+DND_JS = """<script>
+(function(){
+  var zone=document.getElementById('dz_%(key)s'),
+      inp=document.getElementById('dzinp_%(key)s'),
+      box=document.getElementById('dzlist_%(key)s'),
+      cnt=document.getElementById('dzcnt_%(key)s');
+  if(!zone||!inp)return;
+  var MAX=%(lim)d, files=[];
+  function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+  function fmt(b){return b>=1048576?(b/1048576).toFixed(1)+' МБ'
+    :(b/1024).toFixed(0)+' КБ'}
+  function sync(){try{var dt=new DataTransfer();
+    for(var i=0;i<files.length;i++)dt.items.add(files[i]);
+    inp.files=dt.files;}catch(e){}}
+  function draw(){
+    var h='';
+    for(var i=0;i<files.length;i++){var f=files[i];
+      h+='<li class="dnd-chip" title="'+esc(f.name)+'"><span class="dnd-name">'
+        +esc(f.name)+'</span><span class="dnd-size">'+fmt(f.size)+'</span>'
+        +'<button type="button" class="dnd-x" data-i="'+i+'" '
+        +'title="Убрать">&#10005;</button></li>'}
+    box.innerHTML=h;
+    if(cnt)cnt.textContent=files.length
+      ?(files.length+' из '+MAX+' файлов'):'';
+    Array.prototype.forEach.call(box.querySelectorAll('.dnd-x'),function(b){
+      b.addEventListener('click',function(){
+        files.splice(+b.getAttribute('data-i'),1);draw();sync()})});
+  }
+  function add(list){
+    for(var i=0;i<list.length;i++){
+      var f=list[i];
+      if(MAX===1){files=[f];continue}
+      if(files.length>=MAX){alert('Можно прикрепить не более '+MAX+' файлов');break}
+      var dup=false;
+      for(var j=0;j<files.length;j++)
+        if(files[j].name===f.name&&files[j].size===f.size){dup=true;break}
+      if(!dup)files.push(f);
+    }
+    draw();sync();
+  }
+  zone.addEventListener('click',function(){inp.click()});
+  zone.addEventListener('keydown',function(e){
+    if(e.key==='Enter'||e.key===' '){e.preventDefault();inp.click()}});
+  ['dragenter','dragover'].forEach(function(ev){
+    zone.addEventListener(ev,function(e){e.preventDefault();
+      zone.classList.add('dnd-over')})});
+  ['dragleave','drop'].forEach(function(ev){
+    zone.addEventListener(ev,function(e){
+      e.preventDefault();zone.classList.remove('dnd-over');
+      if(ev==='drop'&&e.dataTransfer&&e.dataTransfer.files)
+        add(e.dataTransfer.files)})});
+  inp.addEventListener('change',function(){
+    if(inp.files.length)add(inp.files);inp.value='';});
+})();
+</script>"""
+
+
 def _render_field(fd, value=""):
     """HTML-инпут для поля формы."""
     typ = fd.get("тип", "text")
@@ -270,18 +328,39 @@ def _render_field(fd, value=""):
         except (TypeError, ValueError):
             lim = 5
         lim = max(1, min(lim, 10))
-        inputs = "".join(
-            f'<input type="file" name="{_e(key)}" style="margin:4px 0">'
-            for _ in range(lim))
-        hint = "прикрепите до %d файлов" % lim
-        return (f'<div class="field"><span class="field-label">{_e(label)}'
-                f'{star}</span><p class="hint">{_e(hint)}</p>{inputs}</div>')
+        hint = ("Перетащите файлы в поле ниже или нажмите на него — "
+                "можно прикрепить до %d файлов" % lim)
+        return (
+            '<div class="field"><span class="field-label">%(label)s</span>'
+            '<p class="hint">%(hint)s</p>'
+            '<div class="dnd">'
+            '<div class="dnd-zone" id="dz_%(key)s" tabindex="0" role="button"'
+            ' aria-label="Загрузка файлов">📄 <span>Перетащите файлы сюда'
+            '<span class="dnd-sub">или нажмите, чтобы выбрать</span></span>'
+            '</div>'
+            '<input type="file" id="dzinp_%(key)s" name="%(key)s" multiple '
+            'class="dnd-inp">'
+            '<ul class="dnd-list" id="dzlist_%(key)s"></ul>'
+            '<span class="dnd-cnt" id="dzcnt_%(key)s"></span>'
+            + DND_JS % {"key": _e(key), "lim": lim} + '</div></div>'
+        ) % {"label": _e(label) + star, "hint": _e(hint), "key": _e(key)}
 
     if typ == "file":
         accept = fd.get("accept", "")
         acc = f' accept="{accept}"' if accept else ''
-        return (f'<div class="field"><label for="{html_id}">{_e(label)}{star}</label>'
-                f'<input type="file" id="{html_id}" name="{_e(key)}"{acc}></div>')
+        return (
+            '<div class="field"><span class="field-label">%(label)s</span>'
+            '<div class="dnd">'
+            '<div class="dnd-zone" id="dz_%(key)s" tabindex="0" role="button"'
+            ' aria-label="Загрузка файла">📄 <span>Перетащите файл сюда'
+            '<span class="dnd-sub">или нажмите, чтобы выбрать</span></span>'
+            '</div>'
+            '<input type="file" id="dzinp_%(key)s" name="%(key)s"%(acc)s '
+            'class="dnd-inp">'
+            '<ul class="dnd-list" id="dzlist_%(key)s"></ul>'
+            '<span class="dnd-cnt" id="dzcnt_%(key)s"></span>'
+            + DND_JS % {"key": _e(key), "lim": 1} + '</div></div>'
+        ) % {"label": _e(label) + star, "key": _e(key), "acc": acc}
 
     # text, number, date, email, tel — все одинаковый input
     input_type = {"number": "number", "date": "date", "email": "email",
