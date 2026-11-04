@@ -239,6 +239,16 @@ details[open] summary { margin-bottom: 10px; }
   .topbar .user { margin-left: 0; }
 }
 
+/* ── Ведомость шлейфов (тип поля shlei) ──────────────────── */
+.shlei-tbl { width: 100%; border-collapse: collapse; font-size: 14px; margin: 8px 0; }
+.shlei-tbl th { background: #eef2ff; color: #4338ca; padding: 8px 10px; text-align: left; font-size: .86em; }
+.shlei-tbl td { padding: 4px 6px; border-bottom: 1px solid #f0f0f0; }
+.shlei-tbl input { width: 100%; padding: 7px 9px; border: 1.5px solid #e0e0e0; border-radius: 7px; font: inherit; font-size: 14px; }
+.shlei-tbl .sl-del { background: none; border: none; color: #ef4444; cursor: pointer; font-size: 15px; padding: 2px 6px; }
+.shlei-view { border-collapse: collapse; font-size: .9em; }
+.shlei-view th { background: #f1f4f9; padding: 6px 10px; text-align: left; }
+.shlei-view td { padding: 5px 10px; border-bottom: 1px solid #f0f0f0; }
+
 /* ── Тумблер темы ────────────────────────────────────────── */
 .theme-toggle {
   background: rgba(255,255,255,.1); color: #fff;

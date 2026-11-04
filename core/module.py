@@ -160,6 +160,12 @@ class ModuleContext:
     def task_for_brigade(self, task, brigade):
         return self._core.task_for_brigade(task, brigade)
 
+    def brigade_rename(self, old, new):
+        return self._core.brigade_rename(old, new)
+
+    def brigade_delete(self, name):
+        return self._core.brigade_delete(name)
+
     def mat_dir(self, course_id, lesson_id):
         """Папка файлов занятия (данные/раздатка/<курс>/<занятие>)."""
         return os.path.join(self._core.store.mat, course_id, lesson_id)

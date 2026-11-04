@@ -118,14 +118,19 @@ def register(ctx):
         student_rows = ""
         for s in students:
             brig = (s.get("бригада") or "").strip()
-            brig_cell = ('<span class="team-badge">👥 %s</span>' % _e(brig)
-                         if brig else "—")
             student_rows += (
-                '<tr><td>%s</td><td>%s</td><td>%s</td>'
+                '<tr><td>%s</td><td>%s</td>'
+                '<td><form method="post" action="/staff/student_brigade" '
+                'style="display:inline;white-space:nowrap">'
+                '<input type="hidden" name="student" value="%s">'
+                '<input type="hidden" name="course" value="%s">'
+                '<input type="text" name="brigade" value="%s" placeholder="—" '
+                'style="width:140px;padding:6px 8px"> '
+                '<button class="btn-sm">💾</button></form></td>'
                 '<td><a href="/staff/delete/student/%s" '
                 'onclick="%s" class="btn btn-danger btn-sm">X</a></td></tr>') % (
-                    _e(s["fio"]), _e(s.get("group", "")), brig_cell,
-                    _e(s["id"]), ds)
+                    _e(s["fio"]), _e(s.get("group", "")),
+                    _e(s["id"]), _e(cid), _e(brig), _e(s["id"]), ds)
 
         student_table = ""
         if students:
@@ -184,7 +189,7 @@ def register(ctx):
             '<p><label>Бригада: <input type="text" name="brigade" '
             'placeholder="Бригада-1"></label></p>'
             '<p><button>Добавить</button></p></form></details>'
-            '</div>')
+            '</div></div>')
         import_form = (
             '<details><summary>📥 Импорт группы</summary>'
             '<form method="post" action="/staff/import_group" '
@@ -242,23 +247,41 @@ def register(ctx):
             b = (s.get("бригада") or "").strip()
             if b:
                 teams.setdefault(b, []).append(s.get("fio", ""))
-        team_rows = "".join(
-            '<li>👥 <b>%s</b> — %d чел.: %s</li>'
-            % (_e(b), len(m), _e(", ".join(m)))
-            for b, m in sorted(teams.items())) or \
-            '<li class="hint">Пока нет бригад.</li>'
+        team_blocks = ""
+        for b, m in sorted(teams.items()):
+            team_blocks += (
+                '<div class="field-block" style="margin:8px 0">'
+                '<p><b>👥 %s</b> — %d чел. (лимит %d): %s</p>'
+                '<form method="post" action="/staff/brigade_rename" '
+                'style="display:inline">'
+                '<input type="hidden" name="course" value="%s">'
+                '<input type="hidden" name="old" value="%s">'
+                '<input type="text" name="new" value="%s" '
+                'style="width:150px;padding:6px 8px">'
+                '<button class="btn-sm">Переименовать</button></form> '
+                '<form method="post" action="/staff/brigade_delete" '
+                'style="display:inline">'
+                '<input type="hidden" name="course" value="%s">'
+                '<input type="hidden" name="name" value="%s">'
+                '<button class="btn-sm btn-danger">Распустить</button></form>'
+                '</div>'
+            ) % (_e(b), len(m), bmax, _e(", ".join(m)), _e(cid), _e(b),
+                 _e(b), _e(cid), _e(b))
+        if not team_blocks:
+            team_blocks = '<p class="hint">Пока нет бригад.</p>'
         brigade_card = (
             '<div class="staff-card"><h2>👷 Бригады</h2>'
-            '<p class="hint">Названия бригад придумывают студенты и вступают '
-            'сами — на странице курса. Максимальный состав назначаете вы.</p>'
-            '<ul>%s</ul>'
+            '<p class="hint">Студенты регистрируют бригады на странице курса; '
+            'вы можете править состав в таблице студентов, переименовывать '
+            'и распускать бригады здесь. Максимальный состав назначаете вы.</p>'
+            '%s'
             '<form method="post" action="/staff/brigade_max">'
             '<input type="hidden" name="course" value="%s">'
             '<p><label>Максимальный состав бригады: '
             '<input type="number" name="max" value="%d" min="1" max="20" '
             'required></label></p>'
             '<p><button>Сохранить</button></p></form></div>'
-        ) % (team_rows, _e(cid), bmax)
+        ) % (team_blocks, _e(cid), bmax)
         body = body.replace("</div></div>",
                             "</div>" + groups_card + brigade_card + enroll_card +
                             import_form + "</div>", 1)
@@ -573,6 +596,28 @@ def register(ctx):
             key = fd.get("ключ", "")
             if fd.get("тип") in ("file", "hidden"):
                 continue
+            if fd.get("тип") == "shlei":
+                import json as _json
+                try:
+                    _rl = _json.loads(answers.get(key, "") or "[]")
+                except ValueError:
+                    _rl = []
+                _rows = "".join(
+                    '<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td>'
+                    '<td>%s</td></tr>' % (
+                        _e(r.get("n", "")), _e(r.get("type", "")),
+                        _e(r.get("dev", "")), _e(r.get("cnt", "")),
+                        _e(r.get("note", "")))
+                    for r in (_rl if isinstance(_rl, list) else [])
+                    if isinstance(r, dict) and
+                    (r.get("n") or r.get("type") or r.get("dev")
+                     or r.get("cnt") or r.get("note")))
+                answer_rows += (
+                    '<tr><td>%s</td><td><table class="shlei-view">'
+                    '<tr><th>№ шлейфа</th><th>Тип</th><th>Прибор</th>'
+                    '<th>Кол-во</th><th>Комментарий</th></tr>%s</table>'
+                    '</td></tr>') % (_e(fd.get("вопрос") or key), _rows)
+                continue
             val = answers.get(key, "")
             if not val and key not in answers:
                 continue
@@ -738,6 +783,30 @@ def register(ctx):
                 brs = [brs]
             ctx.task_set_issue(tid, brs)
         handler._redirect("/staff/task/%s" % _e(tid))
+        return handler._SENT
+
+    # ── Редактирование бригад ────────────────────────────────────────
+    @ctx.add_route("POST", "/staff/student_brigade", access="staff")
+    def student_brigade(handler, params):
+        data = handler._parse_post()
+        sid = data.get("student", "")
+        if ctx.get_student(sid):
+            ctx.student_set_brigade(sid, data.get("brigade", ""))
+        handler._redirect("/staff/course/%s" % _e(data.get("course", "")))
+        return handler._SENT
+
+    @ctx.add_route("POST", "/staff/brigade_rename", access="staff")
+    def brigade_rename(handler, params):
+        data = handler._parse_post()
+        ctx.brigade_rename(data.get("old", ""), data.get("new", ""))
+        handler._redirect("/staff/course/%s" % _e(data.get("course", "")))
+        return handler._SENT
+
+    @ctx.add_route("POST", "/staff/brigade_delete", access="staff")
+    def brigade_delete(handler, params):
+        data = handler._parse_post()
+        ctx.brigade_delete(data.get("name", ""))
+        handler._redirect("/staff/course/%s" % _e(data.get("course", "")))
         return handler._SENT
 
     # ── Максимальный состав бригад ───────────────────────────────────

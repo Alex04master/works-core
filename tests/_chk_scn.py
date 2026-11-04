@@ -10,8 +10,12 @@ tasks = [t for t in db["задания"] if t.get("lesson") == lid]
 assert len(tasks) == 2, len(tasks)
 form = {f["ключ"]: f["тип"] for f in tasks[0]["форма"]}
 assert form.get("plan_data") == "hidden" and form.get("calc") == "textarea", form
+assert form.get("loops") == "shlei", form
 assert "plan_photo" not in form and "plan" not in form, form
-assert tasks[0]["форма"][1].get("обязательно") is True
+loops_f = [f for f in tasks[0]["форма"] if f.get("ключ") == "loops"][0]
+assert loops_f.get("строк") == 10, loops_f
+calc_f = [f for f in tasks[0]["форма"] if f.get("ключ") == "calc"][0]
+assert calc_f.get("обязательно") is True, calc_f
 assert tasks[0].get("настройки", {}).get("план") == "SC-1", tasks[0].get("настройки")
 d = tasks[0].get("описание", "")
 assert "**calc**" in d and "<b>" not in d and "<br" not in d

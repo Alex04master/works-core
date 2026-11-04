@@ -61,7 +61,7 @@ try {
 
   # board page
   $b = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/board'
-  Chk 'board renders' ($b -match 'pod-card')
+  Chk 'board renders' ($b -match 'lb-grp')
 
   # CSV export
   curl.exe -s -o "$PWD\_exp.csv" -b "$PWD\_staff.txt" 'http://localhost:8099/staff/export/course/c1'
@@ -86,7 +86,7 @@ try {
 
   curl.exe -s -b "$PWD\_staff.txt" -d 'course=c1' 'http://localhost:8099/staff/enroll_all' | Out-Null
   $cp = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/staff/course/c1'
-  Chk 'staff table shows brigade badge' ($cp -match 'team-badge')
+  Chk 'staff table shows brigade editor' ($cp -match 'name="brigade"')
 
   $p1b = curl.exe -s -b "$PWD\_ck.txt" 'http://localhost:8099/task/t1'
   Chk 'no brigade select for solo student' ($p1b -notmatch 'name="brigade"')
@@ -221,6 +221,39 @@ try {
   $m0 = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
   Chk 'mass issue-all restores' ($m0 -match 'task-form')
   python -X utf8 tests\_mk_kit.py remove | Out-Null
+
+  # ---- teacher edits brigades ----
+  curl.exe -s -b "$PWD\_staff.txt" -d 'fio=Edit Test Student' -d 'group=GRP-99' -d 'brigade=EDIT-1' 'http://localhost:8099/staff/add_student' | Out-Null
+  python -X utf8 tests\_chk_brig6.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   teacher created brigade record' } else { Write-Output 'FAIL teacher created brigade record'; $script:fail++ }
+  $cpb = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/staff/course/c1'
+  Chk 'brigade edit input in students table' ($cpb -match 'student_brigade')
+  Chk 'rename/dissolve forms present' ($cpb -match 'brigade_rename' -and $cpb -match 'brigade_delete')
+  curl.exe -s -b "$PWD\_staff.txt" -d 'old=EDIT-1' -d 'new=EDIT-2' -d 'course=c1' 'http://localhost:8099/staff/brigade_rename' | Out-Null
+  python -X utf8 tests\_chk_brig7.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   brigade renamed' } else { Write-Output 'FAIL brigade renamed'; $script:fail++ }
+  curl.exe -s -b "$PWD\_staff.txt" -d 'name=EDIT-2' -d 'course=c1' 'http://localhost:8099/staff/brigade_delete' | Out-Null
+  python -X utf8 tests\_chk_brig8.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   brigade dissolved' } else { Write-Output 'FAIL brigade dissolved'; $script:fail++ }
+
+  # ---- board: группировка и фильтр по группам ----
+  curl.exe -s -b "$PWD\_staff.txt" -d 'fio=Board Test Student' -d 'group=GRP-99' -d 'brigade=B99' 'http://localhost:8099/staff/add_student' | Out-Null
+  $bAll = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/board'
+  Chk 'board groups sections' ($bAll -match 'lb-grp')
+  Chk 'board all: shows both groups' ($bAll -match 'TEST-TEAM' -and $bAll -match 'B99')
+  $bG = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/board?group=GRP-99'
+  Chk 'board filtered: own brigade only' ($bG -match 'B99' -and $bG -notmatch 'TEST-TEAM')
+  $bK = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/board?group=%D0%9F-21'
+  Chk 'board filtered: P-21 keeps teams' ($bK -match 'TEST-TEAM' -and $bK -notmatch 'B99')
+
+  # ---- shlei table ----
+  $tp5 = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
+  Chk 'shlei table on task page' ($tp5 -match 'shlei-tbl' -and $tp5 -match 'name="loops"')
+  curl.exe -s -b "$PWD\_ck.txt" -F "task=$scnTid" -F 'calc=ok' -F 'loops=<tests\_loops.json' 'http://localhost:8099/api/submit' | Out-Null
+  python -X utf8 tests\_chk_loops.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   shlei data stored' } else { Write-Output 'FAIL shlei data stored'; $script:fail++ }
+  $sp5 = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/sub/${scnTid}__s1"
+  Chk 'sub page renders shlei table' ($sp5 -match 'shlei-view')
 
 } finally {
   Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue

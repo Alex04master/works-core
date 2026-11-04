@@ -62,8 +62,9 @@ try:
     chk("6 tasks", len(tasks) == 6)
     t0 = tasks[0]
     form = {f["ключ"]: f["тип"] for f in t0["форма"]}
-    chk("form: plan_data hidden + calc textarea (no file)",
+    chk("form: plan_data + loops + calc (no file)",
         form.get("plan_data") == "hidden" and form.get("calc") == "textarea"
+        and form.get("loops") == "shlei"
         and "plan" not in form and "plan_photo" not in form)
     chk("task settings plan id", t0.get("настройки", {}).get("план") == "СЦ-01")
     mats = les[0].get("материалы") or []
@@ -103,15 +104,17 @@ try:
     chk("task: no links block (content inline)", 'target="_blank"' not in tp)
     chk("task: plan widget iframe", 'src="/plan/%s"' % tid in tp)
     chk("task: submit copies plan draft", "wcplan_" in tp)
+    chk("task: shlei table widget", "shlei-tbl" in tp and 'name="loops"' in tp)
     pp = curl("-b", "_e2e_s1.txt", "http://localhost:8093/plan/%s" % tid)
     chk("plan widget page", "wcplan_" in pp and "СЦ-01" in pp
         and "legend" in pp and "RO=false" in pp)
     chk("plan legend with rules", "Условные обозначения" in pp)
 
-    # сдача с планом
+    # сдача с планом и ведомостью шлейфов
     curl("-b", "_e2e_s1.txt",
          "-F", "task=%s" % tid, "-F", "calc=расчёт готов",
          "-F", 'plan_data=[{"t":"smoke","x":3,"y":2.5},{"t":"ipr","x":0.8,"y":6.2}]',
+         "-F", 'loops=<tests/_loops.json',
          "http://localhost:8093/api/submit")
     files = [f for f in glob.glob("_scntest/*.json")
              if not os.path.basename(f).startswith("_")]
@@ -119,12 +122,16 @@ try:
     ver = db["сдачи"]["%s__s1" % tid]["versions"][-1]
     chk("plan_data stored in version",
         json.loads(ver["answers"]["plan_data"])[0]["t"] == "smoke")
+    loops = json.loads(ver["answers"]["loops"])
+    chk("loops stored in version",
+        isinstance(loops, list) and loops[0].get("cnt") == "3")
 
     # преподаватель: сводка + просмотр плана
     sp = curl("-b", "_e2e_staff.txt",
               "http://localhost:8093/staff/sub/%s__s1" % tid)
     chk("sub page: plan summary + view link",
         "Смотреть план" in sp and "/plan/" in sp)
+    chk("sub page: shlei table view", "shlei-view" in sp)
     pv = curl("-b", "_e2e_staff.txt",
               "http://localhost:8093/plan/%s?sub=%s__s1&v=1" % (tid, tid))
     chk("teacher plan view read-only",
@@ -143,6 +150,8 @@ try:
            and t["id"] == tid][0]
     chk("repair: plan binding intact",
         t2r.get("настройки", {}).get("план") == "СЦ-01")
+    chk("repair: loops field added",
+        any(f.get("ключ") == "loops" for f in t2r["форма"]))
 
     # массовая выдача + скрытие занятий
     lmass = curl("-b", "_e2e_staff.txt",

@@ -150,6 +150,46 @@ class Events:
 
 
 # ── Основные типы полей (встроенные в ядро) ────────────────────────────
+SHLEI_JS = """<script>
+(function(){
+  var box=document.getElementById('slbox_%(key)s');
+  var hid=document.getElementById('slhid_%(key)s');
+  var NROWS=%(rows)d;
+  function load(){try{var v=JSON.parse(hid.value||'[]');
+    if(Array.isArray(v)&&v.length)return v}catch(e){}return []}
+  var data=load();while(data.length<NROWS)data.push({});
+  function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+  function save(){hid.value=JSON.stringify(data.filter(function(r){
+    return r&&(r.n||r.type||r.dev||r.cnt||r.note)}))}
+  function draw(){
+    var h='<table class="shlei-tbl"><tr><th>Номер шлейфа</th><th>Тип</th>'
+      +'<th>Установленный прибор</th><th>Количество приборов на шлейфе</th>'
+      +'<th>Комментарий</th><th></th></tr>';
+    for(var i=0;i<data.length;i++){var r=data[i]||{};
+      h+='<tr><td><input data-i="'+i+'" data-c="n" value="'+esc(r.n)+'"></td>'
+        +'<td><input data-i="'+i+'" data-c="type" value="'+esc(r.type)+'"></td>'
+        +'<td><input data-i="'+i+'" data-c="dev" value="'+esc(r.dev)+'"></td>'
+        +'<td><input data-i="'+i+'" data-c="cnt" value="'+esc(r.cnt)+'"></td>'
+        +'<td><input data-i="'+i+'" data-c="note" value="'+esc(r.note)+'"></td>'
+        +'<td><button type="button" class="sl-del" data-i="'+i+'">&#10005;'
+        +'</button></td></tr>'}
+    box.innerHTML=h+'</table>';
+    Array.prototype.forEach.call(box.querySelectorAll('input'),function(inp){
+      inp.addEventListener('change',upd);inp.addEventListener('input',upd)});
+    Array.prototype.forEach.call(box.querySelectorAll('.sl-del'),function(b){
+      b.addEventListener('click',function(){
+        data.splice(+b.getAttribute('data-i'),1);draw()})})
+  }
+  function upd(){var i=+this.getAttribute('data-i');data[i]=data[i]||{};
+    data[i][this.getAttribute('data-c')]=this.value;save()}
+  document.getElementById('sladd_%(key)s').addEventListener('click',
+    function(){data.push({});draw()});
+  draw();
+})();
+</script>"""
+
+
 def _render_field(fd, value=""):
     """HTML-инпут для поля формы."""
     typ = fd.get("тип", "text")
@@ -165,6 +205,22 @@ def _render_field(fd, value=""):
 
     if typ == "hidden":
         return f'<input type="hidden" name="{_e(key)}" value="{_e(val)}">'
+
+    if typ == "shlei":
+        try:
+            nrows = int(fd.get("строк", 10) or 10)
+        except (TypeError, ValueError):
+            nrows = 10
+        return (
+            '<div class="field"><span class="field-label">%(label)s</span>'
+            '<input type="hidden" id="slhid_%(key)s" name="%(key)s" '
+            'value="%(val)s">'
+            '<div id="slbox_%(key)s"></div>'
+            '<p><button type="button" id="sladd_%(key)s" class="btn-sm">'
+            '+ добавить строку</button></p>'
+            + SHLEI_JS + '</div>'
+        ) % {"label": _e(fd.get("вопрос") or fd.get("подсказка") or key),
+             "key": _e(key), "val": _e(val), "rows": nrows}
 
     if typ == "textarea":
         rows = int(fd.get("строк", 5))
@@ -537,6 +593,36 @@ class Core:
         s["бригада"] = (brigade or "").strip()
         self.store.save()
         return True
+
+    def brigade_rename(self, old, new):
+        """Переименовать бригаду (у студентов и в списках выдачи заданий)."""
+        old = (old or "").strip()
+        new = (new or "").strip()
+        if not old or not new or old == new:
+            return False
+        n = 0
+        for s in self.db["студенты"]:
+            if (s.get("бригада") or "").strip() == old:
+                s["бригада"] = new
+                n += 1
+        for t in self.db["задания"]:
+            issued = t.get("выдано")
+            if isinstance(issued, list) and old in issued:
+                t["выдано"] = sorted({new if b == old else b for b in issued})
+        self.store.save()
+        return True
+
+    def brigade_delete(self, name):
+        """Распустить бригаду: бригада снимается у всех её студентов."""
+        name = (name or "").strip()
+        n = 0
+        for s in self.db["студенты"]:
+            if (s.get("бригада") or "").strip() == name:
+                s["бригада"] = ""
+                n += 1
+        if n:
+            self.store.save()
+        return n
 
     def task_set_issue(self, task_id, brigades):
         """Выдача задания. brigades=None — снять выдачу (сценарное ждёт,
