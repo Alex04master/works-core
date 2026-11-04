@@ -157,7 +157,9 @@ try {
   # ---- interactive plan widget (fake kit with files) ----
   python -X utf8 _mk_kit.py make | Out-Null
   curl.exe -s -b "$PWD\_staff.txt" -H 'Content-Type: application/json' -d '@_smoke_kit.json' 'http://localhost:8099/staff/scenarios/import' | Out-Null
-  $scnTid = (python -X utf8 _chk_scn2.py)
+  $scnOut = (python -X utf8 _chk_scn2.py)
+  $scnTid = ($scnOut -split '\s+')[0]
+  $scnLid = ($scnOut -split '\s+')[1]
   if ($LASTEXITCODE -ne 0) { Write-Output 'FAIL scenario kit files'; $script:fail++ } else { Write-Output 'OK   scenario kit files (mats 02/05/06, plans stripped)' }
   $tp3 = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
   Chk 'scenario task has plan widget' ($tp3 -match 'src="/plan/')
@@ -172,6 +174,24 @@ try {
   Chk 'sub page links to plan view' ($sp3 -match '/plan/')
   $pv = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/plan/${scnTid}?sub=${scnTid}__s1&v=1"
   Chk 'teacher sees student plan (read-only)' ($pv -match 'RO=true')
+
+  # ---- issue scenario to brigades ----
+  curl.exe -s -b "$PWD\_staff.txt" -d "task=$scnTid" -d 'brigade=TEST-TEAM' 'http://localhost:8099/staff/task_issue' | Out-Null
+  $t1i = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
+  Chk 'issued brigade sees task' ($t1i -match 'task-form')
+  $t9i = curl.exe -s -b "$PWD\_ck9.txt" "http://localhost:8099/task/$scnTid"
+  Chk 'other brigade blocked' ($t9i -notmatch 'task-form')
+  $li = curl.exe -s -b "$PWD\_ck9.txt" "http://localhost:8099/lesson/$scnLid"
+  Chk 'lesson list hides issued task' ($li -notmatch 'href="/task/')
+  $r403 = curl.exe -s -i -b "$PWD\_ck9.txt" -F "task=$scnTid" -F 'calc=x' 'http://localhost:8099/api/submit'
+  Chk 'submit blocked for other brigade' ($r403 -match '403')
+  $pv9 = curl.exe -s -b "$PWD\_ck9.txt" "http://localhost:8099/plan/$scnTid"
+  Chk 'plan view blocked for other brigade' ($pv9 -notmatch 'wcplan_')
+  $st2 = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/task/$scnTid"
+  Chk 'staff issue card present' ($st2 -match 'task_issue')
+  curl.exe -s -b "$PWD\_staff.txt" -d "task=$scnTid" -d 'all=on' 'http://localhost:8099/staff/task_issue' | Out-Null
+  $t9b = curl.exe -s -b "$PWD\_ck9.txt" "http://localhost:8099/task/$scnTid"
+  Chk 'issue-all restores visibility' ($t9b -match 'task-form')
   python -X utf8 _mk_kit.py remove | Out-Null
 
 } finally {

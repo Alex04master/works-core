@@ -89,13 +89,13 @@ try:
     chk("lesson page: no Materials block", "<h2>Материалы</h2>" not in lp)
     tid = t0["id"]
     tp = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
-    chk("task: scenario handout links", "target=\"_blank\"" in tp
-        and "/materials/c1/%s/" % lid in tp)
+    chk("task: no links block (content inline)", 'target="_blank"' not in tp)
     chk("task: plan widget iframe", 'src="/plan/%s"' % tid in tp)
     chk("task: submit copies plan draft", "wcplan_" in tp)
     pp = curl("-b", "_e2e_s1.txt", "http://localhost:8093/plan/%s" % tid)
     chk("plan widget page", "wcplan_" in pp and "СЦ-01" in pp
         and "legend" in pp and "RO=false" in pp)
+    chk("plan legend with rules", "Условные обозначения" in pp)
 
     # сдача с планом
     curl("-b", "_e2e_s1.txt",
@@ -117,7 +117,24 @@ try:
     pv = curl("-b", "_e2e_staff.txt",
               "http://localhost:8093/plan/%s?sub=%s__s1&v=1" % (tid, tid))
     chk("teacher plan view read-only",
-        "RO=true" in pv and '"t": "smoke"' in pv.replace(", ", ", "))
+        "RO=true" in pv and '"t": "smoke"' in pv.replace(", ", ", "))    # выдача бригадам: сценарий видят только назначенные бригады
+    curl("-b", "_e2e_staff.txt", "-d", "task=%s" % tid,
+         "-d", "brigade=Iskra", "http://localhost:8093/staff/task_issue")
+    tp2 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
+    chk("issued task hidden from brigadeless student", "task-form" not in tp2)
+    pp2 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/plan/%s" % tid)
+    chk("plan hidden too", "wcplan_" not in pp2)
+    lp2 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/lesson/%s" % lid)
+    chk("lesson list hides issued task",
+        ('href="/task/%s"' % tid) not in lp2)
+    r403 = subprocess.run(["curl.exe", "-s", "-i", "-b", "_e2e_s1.txt",
+                           "-F", "task=%s" % tid, "-F", "calc=x",
+                           "http://localhost:8093/api/submit"], capture_output=True)
+    chk("submit 403 for unissued", " 403 " in r403.stdout.decode("utf-8", "replace"))
+    curl("-b", "_e2e_staff.txt", "-d", "task=%s" % tid, "-d", "all=on",
+         "http://localhost:8093/staff/task_issue")
+    tp3 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
+    chk("issue-all restores visibility", "task-form" in tp3)
 finally:
     proc.terminate()
     try:

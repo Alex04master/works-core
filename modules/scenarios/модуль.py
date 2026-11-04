@@ -311,6 +311,9 @@ svg{display:block;background:#fafbfe;border:1px solid #e5e7eb;border-radius:8px;
 .hint{color:#888;font-size:12px}
 body.ro .tools{display:none}body.ro svg{cursor:default;background:#f8fafc}
 .err{color:#b91c1c;font-weight:600}
+.legbox{margin-top:10px}.legbox summary{cursor:pointer;font-weight:600;color:#667eea;padding:6px 0}
+table.leg{border-collapse:collapse;font-size:12.5px;margin-top:4px}
+table.leg td{padding:4px 12px 4px 0;vertical-align:top;color:#555}
 </style></head><body>
 <div id="app"><p class="hint">Загрузка данных плана…</p></div>
 <script>var TID=__TID__,MATS=__MATS__,PLAN_ID=__PLANID__,RO=__RO__,INIT=__INIT__;</script>
@@ -330,12 +333,19 @@ function boot(){
   var tb='<div class="tools">';
   if(!RO){LEG.forEach(function(l,i){
     var sh=(l.shape==="square")?" sq":(l.shape==="rect")?" rc":"";
-    tb+='<button type="button" class="tool" data-i="'+i+'"><span class="sw'+sh+'" style="background:'+_esc(l.fill||"#fff")+';border-color:'+_esc(l.color||"#666")+'"></span>'+_esc(l.label)+'</button>'});
+    tb+='<button type="button" class="tool" data-i="'+i+'" title="'+_esc(l.rule||"")+'"><span class="sw'+sh+'" style="background:'+_esc(l.fill||"#fff")+';border-color:'+_esc(l.color||"#666")+'"></span>'+_esc(l.label)+'</button>'});
     tb+='<button type="button" class="tool" data-i="-1"><span class="sw" style="background:#fff"></span>Убрать (ластик)</button>';
     tb+='<button type="button" class="tool" id="clr">Очистить всё</button>';
   } else { tb+='<span class="hint">Режим просмотра — размещение студента.</span>'; }
   tb+='</div><div class="bar" id="cnt"></div>';
-  app.innerHTML=tb+'<svg id="svg" viewBox="'+x0+" "+y0+" "+w+" "+h+'" width="100%" height="600"></svg>';
+  var lg='<details class="legbox"><summary>Условные обозначения</summary>'
+    +'<table class="leg">';
+  LEG.forEach(function(l){
+    lg+='<tr><td><span class="sw" style="background:'+_esc(l.fill||"#fff")
+      +';border-color:'+_esc(l.color||"#666")+'"></span></td><td><b>'
+      +_esc(l.label)+'</b></td><td>'+_esc(l.rule||"")+'</td></tr>'});
+  lg+='</table></details>';
+  app.innerHTML=tb+'<svg id="svg" viewBox="'+x0+" "+y0+" "+w+" "+h+'" width="100%" height="600"></svg>'+lg;
   if(RO)document.body.className="ro";
   var svg=document.getElementById("svg");
   var dev=(RO&&INIT)?INIT.slice():load();
@@ -413,6 +423,14 @@ if(document.readyState!=="loading")boot();else document.addEventListener("DOMCon
         if not is_staff and course_id and not ctx.can_access(course_id, sid):
             handler._send_html("<h1>Нет доступа</h1>")
             return handler._SENT
+        if not is_staff:
+            _st = ctx.get_student(sid)
+            _br = (_st.get("бригада", "") or "").strip() if _st else ""
+            if not ctx.task_for_brigade(task, _br):
+                handler._send_html(
+                    "<h1>Задание не выдано</h1>"
+                    "<p>Это задание выдано другой бригаде.</p>")
+                return handler._SENT
         plan_id = (task.get("настройки") or {}).get("план", "")
         ro = False
         init = None

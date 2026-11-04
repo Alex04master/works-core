@@ -538,6 +538,23 @@ class Core:
         self.store.save()
         return True
 
+    def task_set_issue(self, task_id, brigades):
+        """Выдать задание бригадам. Пустой список — задание видно всем."""
+        t = self._get("задания", task_id)
+        if not t:
+            return False
+        t["выдано"] = sorted({(b or "").strip() for b in (brigades or [])
+                              if (b or "").strip()})
+        self.store.save()
+        return True
+
+    def task_for_brigade(self, task, brigade):
+        """Задание без выдачи — всем; с выдачей — только перечисленным бригадам."""
+        issued = (task or {}).get("выдано") or []
+        if not issued:
+            return True
+        return (brigade or "").strip() in issued
+
     def enroll(self, course_id, student_id):
         """Зачислить студента на курс."""
         c = self.course(course_id)

@@ -394,6 +394,26 @@ def register(ctx):
                 ' <span class="state-сбой">(истёк)</span>'
                 if datetime.now() > dl else ""))
 
+        issued = set(task.get("выдано") or [])
+        brigades = sorted({(s.get("бригада") or "").strip()
+                           for s in ctx.list_students()
+                           if (s.get("бригада") or "").strip()})
+        brig_rows = "".join(
+            '<label class="cb-label"><input type="checkbox" name="brigade" '
+            'value="%s"%s> 👥 %s</label>' % (
+                _e(b), " checked" if b in issued else "", _e(b))
+            for b in brigades) or \
+            '<p class="hint">Бригад пока нет — студенты создают их на странице курса.</p>'
+        issue_card = (
+            '<form method="post" action="/staff/task_issue" class="staff-card">'
+            '<h2>📤 Выдача бригадам</h2>'
+            '<p class="hint">Отметьте бригады, которым выдано задание. '
+            'Пока ничего не отмечено — задание видно всем студентам курса.</p>'
+            '%s'
+            '<p><label class="cb-label"><input type="checkbox" name="all"%s> '
+            'Выдать всем (снять выдачу)</label></p>'
+            '<p><button>Сохранить выдачу</button></p></form>'
+        ) % (brig_rows, " checked" if not issued else "")
         body = (
             '<p><a href="/staff/lesson/%s">%s</a></p>'
             '<div class="staff-card">'
@@ -414,7 +434,8 @@ def register(ctx):
             '</div>'
             '<h2>Сдачи (%d)</h2>'
             '<table class="staff-table"><tr><th>Студент</th><th>Статус</th>'
-            '<th>Версия</th><th>Время</th><th></th></tr>%s</table>') % (
+            '<th>Версия</th><th>Время</th><th></th></tr>%s</table>'
+            '%s') % (
                 _e(task.get("lesson", "")),
                 _e(lesson["title"] if lesson else ""),
                 dl_info,
@@ -424,7 +445,7 @@ def register(ctx):
                 _e((task.get("настройки") or {}).get("срок", "")),
                 _e(task.get("описание", "")),
                 _e(form_json),
-                len(subs), sub_rows)
+                len(subs), sub_rows, issue_card)
         return _page(ctx, task.get("title", ""), body)
 
     # ── Редактировать задание ────────────────────────────────────────
@@ -604,6 +625,24 @@ def register(ctx):
         score_val = float(score) if score else None
         ctx.set_verdict(tid, sid, verdict, score_val, comment)
         handler._redirect("/staff/sub/%s" % _e(key))
+        return handler._SENT
+
+    # ── Выдача задания бригадам ──────────────────────────────────────
+    @ctx.add_route("POST", "/staff/task_issue", access="staff")
+    def task_issue(handler, params):
+        data = handler._parse_post()
+        tid = data.get("task", "")
+        if not ctx.get_task(tid):
+            handler._redirect("/staff")
+            return handler._SENT
+        if data.get("all"):
+            ctx.task_set_issue(tid, [])
+        else:
+            brs = data.get("brigade") or []
+            if isinstance(brs, str):
+                brs = [brs]
+            ctx.task_set_issue(tid, brs)
+        handler._redirect("/staff/task/%s" % _e(tid))
         return handler._SENT
 
     # ── Максимальный состав бригад ───────────────────────────────────

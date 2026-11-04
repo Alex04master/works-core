@@ -853,8 +853,12 @@ class WorksServer(http.server.ThreadingHTTPServer):
                     '<p class="error">Вы не зачислены на этот курс.</p>')
             course = handler._core.course(lesson.get("course", ""))
             tasks = handler._core.tasks(lid)
+            _stu0 = handler._core.student(sid)
+            _brg0 = (_stu0.get("бригада", "") or "").strip() if _stu0 else ""
             items = ""
             for t in tasks:
+                if not handler._core.task_for_brigade(t, _brg0):
+                    continue  # задание выдано другим бригадам
                 sub_info = ""
                 if sid:
                     sub = handler._core.sub(t["id"], sid)
@@ -890,6 +894,14 @@ class WorksServer(http.server.ThreadingHTTPServer):
                 return handler._core.page(
                     "Нет доступа",
                     '<p class="error">Вы не зачислены на этот курс.</p>')
+            _stu0 = handler._core.student(sid)
+            _brg0 = (_stu0.get("бригада", "") or "").strip() if _stu0 else ""
+            if _t and not handler._core.task_for_brigade(_t, _brg0):
+                return handler._core.page(
+                    "Задание не выдано",
+                    '<p class="error">Это задание ещё не выдано вашей бригаде. '
+                    'Создайте бригаду на странице курса или попросите '
+                    'преподавателя выдать его.</p>')
             lesson = handler._core.lesson(handler._core.task(tid).get("lesson", ""))
             course = handler._core.course(lesson.get("course", "")) if lesson else None
             form_html = handler._core.task_form_html(task_data)
@@ -970,22 +982,23 @@ class WorksServer(http.server.ThreadingHTTPServer):
                                urllib.parse.quote(_n), _lbl))
                 if _links:
                     scn_html = (
-                        '<div class="task-desc"><h3>📚 Материалы сценария</h3>'
-                        '<p>%s</p></div>'
-                        '<div class="task-desc"><h3>🖊 Интерактивный план</h3>'
-                        '<p class="hint">Выберите обозначение и щёлкните по плану. '
-                        'Клик по установленному устройству — убрать. Черновик '
-                        'сохраняется автоматически и уйдёт вместе с отчётом.</p>'
-                        '<iframe src="/plan/%s" style="width:100%%;height:680px;'
+                        '<div class="task-desc"><h3>📐 План сооружения</h3>'
+                        '<p class="hint">Выберите условное обозначение и щёлкните '
+                        'по плану — устройство встанет в точку. Клик по '
+                        'установленному устройству — убрать. Перечень '
+                        'обозначений и правил — под планом. Черновик '
+                        'сохраняется автоматически и уйдёт вместе с отчётом.'
+                        '</p>'
+                        '<iframe src="/plan/%s" style="width:100%%;height:900px;'
                         'border:1px solid #e0e0e0;border-radius:12px" '
-                        'title="Интерактивный план"></iframe>'
+                        'title="Интерактивный план сооружения"></iframe>'
                         '<script>(function(){var f=document.querySelector'
                         "('form.task-form');if(!f)return;"
                         "f.addEventListener('submit',function(){try{"
                         "var v=localStorage.getItem('wcplan_%s')||'[]';"
-                        "var i=f.querySelector('[name=\"plan_data\"]');"
+                        "var i=f.querySelector('[name=plan_data]');"
                         "if(i)i.value=v;}catch(e){}});})();</script>"
-                    ) % (" ".join(_links), _e(tid), _e(tid))
+                    ) % (_e(tid), _e(tid))
             body = ('<p><a href="/lesson/%s">%s</a></p>'
                     '<div class="task-desc">%s</div>%s%s%s'
                     '<form method="post" action="/api/submit"'
@@ -1006,6 +1019,12 @@ class WorksServer(http.server.ThreadingHTTPServer):
             sid = handler._student()
             if not sid:
                 handler._send_json(403, {"error": "not authorised"})
+                return _SENT
+            _tq = handler._core.task(tid)
+            _sq = handler._core.student(sid)
+            if _tq and not handler._core.task_for_brigade(
+                    _tq, ((_sq.get("бригада", "") or "").strip() if _sq else "")):
+                handler._send_json(403, {"error": "task not issued"})
                 return _SENT
             answers = {}
             files = {}
