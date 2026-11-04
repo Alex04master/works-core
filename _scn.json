@@ -1,0 +1,3 @@
+{"course":"c1","kit":"SCNTEST","event":{"title":"<b>SCN-TEST</b><br>день","place":"x","stands":{"s20":{"code":"T0711","name":"Signal-20"}}},"cards":[
+{"id":"SC-1","title":"Card one","lvl":"1","time":"45 min","team":"4-5","role":"Brigade designer","story":"Smoke in hall <b>test</b>","obj":"Object x","data_table":[["Room","6x5","30","-"]],"tasks":["Do <b>calc</b>","Place devices"],"given":["Plan"],"criteria":[["Correct calc","50"],["Assembly","50"]],"traps":["Area only"],"stands":["s20"]},
+{"id":"SC-2","title":"Card two","lvl":"2","time":"45 min","team":"4-5","role":"Brigade","story":"Another","obj":"Object y","tasks":["Do"],"criteria":[["All","100"]],"stands":[]}]}

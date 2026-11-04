@@ -183,7 +183,9 @@ class WorksHandler(http.server.BaseHTTPRequestHandler):
 
     def _handle(self, method):
         try:
-            path = urllib.parse.urlparse(self.path).path
+            # percent-encoding -> текст: браузер кодирует кириллицу
+            # в путях (/scnfile/<комплект>, /materials/<файл>)
+            path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)
             # Статика и материалы — до роутера: маршрут "/" (префикс,
             # оканчивающийся на "/") иначе перехватывает ВСЕ пути,
             # и core.css/файлы не отдаются вовсе.
