@@ -61,6 +61,9 @@ try:
                    key=lambda t: t["title"])
     chk("6 tasks", len(tasks) == 6)
     t0 = tasks[0]
+    crits = t0.get("настройки", {}).get("критерии") or []
+    chk("criteria imported from card",
+        isinstance(crits, list) and len(crits) >= 1)
     form = {f["ключ"]: f["тип"] for f in t0["форма"]}
     chk("form: plan_data + loops + firmware + calc (no file)",
         form.get("plan_data") == "hidden" and form.get("calc") == "textarea"
@@ -133,6 +136,10 @@ try:
     chk("firmware files saved (2)",
         "firmware" in fl and "firmware-2" in fl
         and fl["firmware"]["имя"].endswith(".bin"))
+    lmx = curl("-b", "_e2e_staff.txt",
+               "http://localhost:8093/staff/lesson/%s" % lid)
+    chk("matrix: solo row shows submission",
+        "mx-tbl" in lmx and "mx-sent" in lmx)
 
     # преподаватель: сводка + просмотр плана
     sp = curl("-b", "_e2e_staff.txt",
@@ -141,6 +148,7 @@ try:
         "Смотреть план" in sp and "/plan/" in sp)
     chk("sub page: shlei table view", "shlei-view" in sp)
     chk("sub page: firmware files listed", "firmware-2" in sp)
+    chk("sub page: criteria checklist", 'name="crit"' in sp)
     pv = curl("-b", "_e2e_staff.txt",
               "http://localhost:8093/plan/%s?sub=%s__s1&v=1" % (tid, tid))
     chk("teacher plan view read-only",
@@ -166,6 +174,30 @@ try:
         t2r.get("настройки", {}).get("план") == "СЦ-01")
     chk("repair: loops field added",
         any(f.get("ключ") == "loops" for f in t2r["форма"]))
+
+    # вердикт с чек-листом + живые уведомления
+    curl("-b", "_e2e_staff.txt", "-d", "key=%s__s1" % tid,
+         "-d", "verdict=%s" % urllib.parse.quote("Принято"),
+         "-d", "score=4.5", "-d", "crit=0", "-d", "crit=1",
+         "http://localhost:8093/staff/verdict")
+    files = [f for f in glob.glob("_scntest/*.json")
+             if not os.path.basename(f).startswith("_")]
+    db = json.loads(io.open(files[0], encoding="utf-8").read())
+    sub2 = db["сдачи"]["%s__s1" % tid]
+    ver3 = sub2["versions"][-1]
+    chk("verdict checklist saved",
+        ver3.get("чек") == [0, 1] and ver3.get("verdict") == "Принято"
+        and bool(ver3.get("время_вердикта")))
+    chk("submission status accepted", sub2.get("status") == "принято")
+    tpv = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
+    chk("student sees criteria result", "crit-list" in tpv)
+    fdj = json.loads(curl("-b", "_e2e_staff.txt",
+                          "http://localhost:8093/board/feed"))
+    chk("board feed events",
+        isinstance(fdj, list) and len(fdj) >= 1
+        and any("Проверено" in (it.get("what") or "") for it in fdj))
+    bdp = curl("-b", "_e2e_staff.txt", "http://localhost:8093/board")
+    chk("board toast widget", "toastbox" in bdp and "/board/feed" in bdp)
 
     lf = glob.glob("_scntest/лог/*.jsonl")
     chk("audit log written", bool(lf))

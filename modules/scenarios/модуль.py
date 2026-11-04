@@ -394,8 +394,15 @@ function _imp(f){
                  "обязательно": True,
                  "строк": 7, "место": "Формулы, число ИП, выводы…"},
             ]
+            crit = []
+            for c in (card.get("criteria") or []):
+                if isinstance(c, (list, tuple)) and len(c) >= 2 and c[0]:
+                    crit.append("%s — %s балл." % (_clean(str(c[0])),
+                                                   _clean(str(c[1]))))
+                elif isinstance(c, str) and c.strip():
+                    crit.append(_clean(c))
             ctx.add_task(lid, ttitle, _card_desc(card, ev), form,
-                         {"план": card.get("id", "")})
+                         {"план": card.get("id", ""), "критерии": crit})
             n_tasks += 1
 
         imported.setdefault(cid, {})[kit] = {"lid": lid, "tasks": n_tasks}

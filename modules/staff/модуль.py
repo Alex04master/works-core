@@ -422,6 +422,71 @@ def register(ctx):
                 '<p><button>Сохранить выдачу</button></p></form>'
             ) % (_e(lid), issue_head, issue_rows)
 
+        # ── Матрица сдач: бригады × задания ──
+        mx_rows = ""
+        matrix_card = ""
+        if tasks:
+            def _short(s, n=26):
+                s = str(s or "")
+                return s if len(s) <= n else s[:n - 1] + "…"
+
+            info = {}
+            for t in tasks:
+                m = {"brig": {}, "sid": {}}
+                for s in ctx.list_submissions(task_id=t["id"]):
+                    _ver = (s.get("versions") or [{}])[-1]
+                    if s.get("бригада"):
+                        m["brig"][s["бригада"]] = (s, _ver)
+                    m["sid"][s.get("student", "")] = (s, _ver)
+                info[t["id"]] = m
+
+            def _cell(t, m, brigade, sid):
+                if not ctx.task_for_brigade(t, brigade or ""):
+                    return '<td class="mx-off" title="не выдано">—</td>'
+                sv = m["brig"].get(brigade) if brigade else m["sid"].get(sid)
+                if not sv:
+                    return '<td class="mx-wait" title="ждёт сдачи">⏳</td>'
+                s, ver = sv
+                st = s.get("status", "сдано")
+                ic = {"сдано": "📤", "принято": "✅", "доработка": "🔄",
+                      "отклонено": "❌"}.get(st, "📤")
+                cls = {"сдано": "mx-sent", "принято": "mx-ok",
+                       "доработка": "mx-fix", "отклонено": "mx-rej"
+                       }.get(st, "mx-sent")
+                late = " ⏰" if ver.get("просрочено") else ""
+                sc = ("" if ver.get("score") is None
+                      else " · %s" % ver["score"])
+                return ('<td class="%s"><a href="/staff/sub/%s__%s" '
+                        'title="%s">%s%s%s</a></td>'
+                        ) % (cls, _e(t["id"]), _e(s.get("student", "")),
+                             _e(st), ic, sc, late)
+
+            solo = [s for s in ctx.list_students()
+                    if not (s.get("бригада") or "").strip()]
+            for b in brigades:
+                cnt = sum(1 for s in ctx.list_students()
+                          if (s.get("бригада") or "").strip() == b)
+                cells = "".join(_cell(t, info[t["id"]], b, "") for t in tasks)
+                mx_rows += ('<tr><td>👥 <b>%s</b> <span class="reason">(%d)'
+                            '</span></td>%s</tr>' % (_e(b), cnt, cells))
+            for s in solo:
+                cells = "".join(_cell(t, info[t["id"]], "", s["id"])
+                                for t in tasks)
+                mx_rows += ('<tr><td>👤 %s <span class="reason">%s</span></td>'
+                            '%s</tr>' % (_e(s.get("fio", "")),
+                                         _e(s.get("group", "")), cells))
+            heads = "".join('<th title="%s">%s</th>' % (
+                _e(t.get("title", "")), _e(_short(t.get("title", ""))))
+                for t in tasks)
+            matrix_card = (
+                '<div class="staff-card"><h2>📊 Матрица сдач</h2>'
+                '<p class="hint">⏳ ждёт сдачи · 📤 сдано · ✅ принято · '
+                '🔄 доработка · ❌ не принято · ⏰ после срока · '
+                '— не выдано этой бригаде</p>'
+                '<div class="mx-wrap"><table class="staff-table mx-tbl">'
+                '<tr><th>Бригада / студент</th>%s</tr>%s</table></div></div>'
+            ) % (heads, mx_rows)
+
         rows = ""
         for t in tasks:
             subs = ctx.list_submissions(task_id=t["id"])
@@ -438,7 +503,7 @@ def register(ctx):
 
         body = (
             '<p><a href="/staff/course/%s">%s</a></p>'
-            '%s'
+            '%s%s'
             '<table class="staff-table"><tr><th>Задание</th><th>Сдано</th>'
             '<th>Принято</th><th></th></tr>%s</table>'
             '<details><summary>Создать задание</summary>'
@@ -453,7 +518,7 @@ def register(ctx):
             '<p><button>Создать</button></p></form></details>') % (
                 _e(lesson.get("course", "")),
                 _e(course["title"] if course else ""),
-                issue_card, rows, _e(lid))
+                issue_card, matrix_card, rows, _e(lid))
         return _page(ctx, lesson["title"], body)
 
     # ── Создать задание ──────────────────────────────────────────────
@@ -712,6 +777,21 @@ def register(ctx):
             except ValueError:
                 pass
 
+        crits = ((task or {}).get("настройки") or {}).get("критерии") or []
+        if not isinstance(crits, list):
+            crits = []
+        _chk = v.get("чек") or []
+        if not isinstance(_chk, list):
+            _chk = []
+        crit_html = ""
+        if crits:
+            crit_rows = "".join(
+                '<label class="crit-row"><input type="checkbox" name="crit" '
+                'value="%d"%s> %s</label>'
+                % (i, " checked" if i in _chk else "", _e(c))
+                for i, c in enumerate(crits))
+            crit_html = ('<p class="crit-box"><span class="field-label">'
+                         'Критерии (выполнены)</span>%s</p>') % crit_rows
         verdict_form = (
             '<form method="post" action="/staff/verdict" class="staff-card">'
             '<input type="hidden" name="key" value="%s">'
@@ -722,12 +802,13 @@ def register(ctx):
             '<option value="На доработку">На доработку</option>'
             '<option value="Не принято">Не принято</option>'
             '</select></label></p>'
+            '%s'
             '<p><label>Балл: <input type="number" name="score" step="0.5" '
             'min="0" max="100" value="%s"></label></p>'
             '<p><label>Комментарий:<br><textarea name="comment" rows="3" '
             'placeholder="Замечания и рекомендации...">%s</textarea></label></p>'
             '<p><button>Применить вердикт</button></p></form>') % (
-                _e(full_key),
+                _e(full_key), crit_html,
                 str(v.get("score") or ""),
                 _e(v.get("comment", "")))
 
@@ -790,15 +871,23 @@ def register(ctx):
         verdict = data.get("verdict", "")
         score = data.get("score", "").strip()
         comment = data.get("comment", "").strip()
+        raw = data.get("crit", [])
+        if not isinstance(raw, list):
+            raw = [raw]
+        crit_idx = sorted(int(x) for x in raw if str(x).strip().isdigit())
         if "__" not in key or not verdict:
             handler._redirect("/staff")
             return handler._SENT
         tid, sid = key.split("__", 1)
-        score_val = float(score) if score else None
-        ctx.set_verdict(tid, sid, verdict, score_val, comment)
+        try:
+            score_val = float(score) if score else None
+        except ValueError:
+            score_val = None
+        ctx.set_verdict(tid, sid, verdict, score_val, comment, check=crit_idx)
         ctx.audit("вердикт",
                   {"задание": tid, "студент": sid, "решение": verdict,
-                   "балл": score_val}, handler=handler)
+                   "балл": score_val, "критерии": len(crit_idx)},
+                  handler=handler)
         handler._redirect("/staff/sub/%s" % _e(key))
         return handler._SENT
 

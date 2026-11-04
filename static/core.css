@@ -342,3 +342,24 @@ html.dark .dnd-zone:hover, html.dark .dnd-zone.dnd-over { border-color: #818cf8;
 html.dark .dnd-sub, html.dark .dnd-cnt { color: #94a3b8; }
 html.dark .dnd-chip { background: #26334d; border-color: #334155; color: #c7d2fe; }
 html.dark .dnd-x { background: #334155; color: #e2e8f0; }
+/* ── Матрица сдач и критерии проверки ── */
+.mx-wrap { overflow-x: auto; }
+.mx-tbl td { text-align: center; white-space: nowrap; }
+.mx-tbl a { text-decoration: none; font-weight: 600; }
+.mx-wait { color: #94a3b8; }
+.mx-off { color: #cbd5e1; }
+.mx-sent { color: #f59e0b; }
+.mx-ok { color: #10b981; }
+.mx-fix { color: #f59e0b; }
+.mx-rej { color: #ef4444; }
+.crit-box { border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 14px;
+  background: #f8fafc; margin: 10px 0; }
+.crit-row { display: block; padding: 5px 8px; margin: 2px 0; border-radius: 8px;
+  font-size: 14px; }
+.crit-row:hover { background: #eef2ff; }
+.crit-done { margin-top: 6px; font-size: 14px; }
+.crit-list { margin: 4px 0 0; padding-left: 4px; list-style: none; }
+.crit-on { color: #10b981; padding: 2px 0; }
+html.dark .crit-box { border-color: #334155; background: #1e293b; }
+html.dark .crit-row:hover { background: #312e81; }
+html.dark .mx-off { color: #475569; }

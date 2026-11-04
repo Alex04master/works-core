@@ -983,6 +983,18 @@ class WorksServer(http.server.ThreadingHTTPServer):
                         sub_info += "<p>Балл: %s</p>" % _e(str(v["score"]))
                     if v.get("comment"):
                         sub_info += "<p>%s</p>" % _e(v["comment"])
+                    _chks = v.get("чек") or []
+                    if _chks:
+                        _td = handler._core.task(tid)
+                        _crits = (((_td or {}).get("настройки") or {})
+                                  .get("критерии")) or []
+                        _items = "".join(
+                            '<li class="crit-on">✔ %s</li>' % _e(c)
+                            for i, c in enumerate(_crits) if i in _chks)
+                        if _items:
+                            sub_info += ('<div class="crit-done">Критерии:'
+                                         '<ul class="crit-list">%s</ul></div>'
+                                         % _items)
                 sub_info += "</div>"
                 if sub.get("бригада"):
                     sub_info += '<p>👥 Бригада «%s» — участников: %d</p>' % (

@@ -211,6 +211,8 @@ try {
   # ---- mass issue matrix + hidden lessons ----
   $lm = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/lesson/$scnLid"
   Chk 'mass issue matrix on lesson page' ($lm -match 'issue_mass')
+  Chk 'submissions matrix on lesson page' ($lm -match 'mx-tbl')
+  Chk 'matrix waiting cells' ($lm -match 'mx-wait')
   curl.exe -s -b "$PWD\_staff.txt" -d "lesson=$scnLid" -d "iss=$scnTid|BR-1" 'http://localhost:8099/staff/issue_mass' | Out-Null
   $m9 = curl.exe -s -b "$PWD\_ck9.txt" "http://localhost:8099/task/$scnTid"
   Chk 'mass issue: BR-1 sees task' ($m9 -match 'task-form')
@@ -265,6 +267,18 @@ try {
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   firmware files stored' } else { Write-Output 'FAIL firmware files stored'; $script:fail++ }
   $sp6 = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/sub/${scnTid}__s1"
   Chk 'sub page shows firmware files' ($sp6 -match 'firmware-2')
+  curl.exe -s -b "$PWD\_staff.txt" -d "key=${scnTid}__s1" -d 'verdict=%D0%9F%D1%80%D0%B8%D0%BD%D1%8F%D1%82%D0%BE' -d 'score=4.5' -d 'comment=Good' -d 'crit=0' -d 'crit=1' 'http://localhost:8099/staff/verdict' | Out-Null
+  $env:VKEY = "$scnTid" + '__s1'
+  python -X utf8 tests\_chk_verdict.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   verdict with checklist saved' } else { Write-Output 'FAIL verdict with checklist'; $script:fail++ }
+  $sv2 = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/sub/${scnTid}__s1"
+  Chk 'criteria pre-checked on sub page' ($sv2 -match 'checked')
+  $tpv = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
+  Chk 'student sees criteria result' ($tpv -match 'crit-list')
+  $fd = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/board/feed'
+  Chk 'board feed has events' ($fd -match 'BR-1')
+  $bd = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/board'
+  Chk 'board toast widget' ($bd -match 'toastbox' -and $bd -match '/board/feed')
   $sp5 = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/sub/${scnTid}__s1"
   Chk 'sub page renders shlei table' ($sp5 -match 'shlei-view')
 

@@ -11,6 +11,33 @@ import urllib.parse
 from datetime import datetime
 
 
+FEED_JS = """<script>
+var _seen={}, _first=true;
+function _toast(it){
+  var b=document.createElement('div'); b.className='toast';
+  var ico=(it.what.indexOf('Проверено')===0)?'✅ ':'📤 ';
+  b.innerHTML='<b>'+it.who+'</b><span class="t-what">'+ico+it.what+'</span>';
+  var box=document.getElementById('toastbox');
+  if(!box)return;
+  box.appendChild(b);
+  setTimeout(function(){b.style.transition='opacity .5s'; b.style.opacity='0';
+    setTimeout(function(){b.remove()},500)},7000);
+}
+function _poll(){
+  fetch('/board/feed').then(function(r){return r.json()}).then(function(list){
+    var fresh=[];
+    (list||[]).forEach(function(it){
+      var k=it.time+'|'+it.who+'|'+it.what;
+      if(!_seen[k]){fresh.push(it); _seen[k]=1}
+    });
+    if(_first){_first=false; return}
+    fresh.forEach(_toast);
+  }).catch(function(){});
+}
+setInterval(_poll,10000); _poll();
+</script>"""
+
+
 def register(ctx):
     @ctx.add_route("GET", "/board", access="staff")
     def board_page(handler, params):
@@ -208,6 +235,19 @@ def register(ctx):
                  '#667eea,#764ba2);border-radius:6px;transition:width 1s;}'
                  '.empty-msg{text-align:center;padding:30px 20px;color:#aaa;}'
                  '.empty-msg span{font-size:3em;display:block;margin-bottom:10px;}'
+                 '.toastbox{position:fixed;top:14px;right:14px;z-index:99;'
+                 'display:flex;flex-direction:column;gap:8px;}'
+                 '.toast{background:linear-gradient(135deg,'
+                 'rgba(102,126,234,.96),rgba(118,75,162,.96));color:#fff;'
+                 'padding:12px 18px;border-radius:12px;'
+                 'box-shadow:0 8px 30px rgba(0,0,0,.45);'
+                 'animation:tstIn .45s ease-out both;font-size:1.1em;'
+                 'max-width:380px;border:1px solid rgba(165,180,252,.4);}'
+                 '.toast b{color:#ffd700;}'
+                 '.toast .t-what{display:block;font-size:.85em;color:#e0e7ff;'
+                 'margin-top:2px;}'
+                 '@keyframes tstIn{from{opacity:0;transform:translateX(40px)}'
+                 'to{opacity:1;transform:none}}'
                  '@media(max-width:768px){.stand-title{font-size:2em}'
                  '.podium{grid-template-columns:1fr}'
                  '.pod-card.gold,.pod-card.silver,.pod-card.bronze{order:unset;'
@@ -217,14 +257,39 @@ def register(ctx):
                  '<script>function _tick(){var d=new Date();'
                  'var e=document.getElementById("clk");'
                  'if(e)e.innerText=d.toLocaleTimeString("ru");}'
-                 'setInterval(_tick,1000);</script>')
+                 'setInterval(_tick,1000);</script>' + FEED_JS)
         body = ('<h1 class="stand-title">\U0001f3c6 ТАБЛИЦА ЛИДЕРОВ</h1>'
                 '<p class="stand-sub">works-core · учебная практика</p>'
+                '<div class="toastbox" id="toastbox"></div>'
                 '%s'
                 '<div class="stand-meta"><span>%s</span>'
                 '<span class="clock" id="clk">%s</span><span>%s</span></div>%s'
                 ) % (chips, sel or "Все группы", now.strftime("%H:%M:%S"),
                      now.strftime("%d.%m.%Y"), sections)
         return ctx.render_page("Доска", body, staff=True, extra_head=extra)
+
+    # ── Лента последних событий (для живых уведомлений) ─────────────
+    @ctx.add_route("GET", "/board/feed", access="staff")
+    def board_feed(handler, params):
+        items = []
+        for sub in ctx.list_submissions():
+            vs = sub.get("versions") or []
+            if not vs:
+                continue
+            v = vs[-1]
+            st = ctx.get_student(sub.get("student", "")) or {}
+            who = sub.get("бригада") or st.get("fio", "")
+            if sub.get("бригада"):
+                who = "👥 " + who
+            t = ctx.get_task(sub.get("task", "")) or {}
+            if v.get("time"):
+                items.append({"time": v.get("time", ""), "who": who,
+                              "what": "Сдал(и): %s" % t.get("title", "")})
+            if v.get("verdict") and v.get("время_вердикта"):
+                items.append({"time": v["время_вердикта"], "who": who,
+                              "what": "Проверено: %s" % v["verdict"]})
+        items.sort(key=lambda d: d["time"], reverse=True)
+        handler._send_json(200, items[:8])
+        return handler._SENT
 
     ctx.log("загружен: доска (таблица лидеров, группировка по группам)")

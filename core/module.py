@@ -227,7 +227,9 @@ class ModuleContext:
         return self._core.collect(task_id, student_id, answers, files, note,
                                   brigade=brigade)
 
-    def set_verdict(self, task_id, student_id, verdict, score=None, comment=""):
+    def set_verdict(self, task_id, student_id, verdict, score=None, comment="",
+                    check=None):
+        from datetime import datetime
         sub = self._core.sub(task_id, student_id)
         if not sub:
             return False
@@ -235,6 +237,8 @@ class ModuleContext:
         ver["verdict"] = verdict
         ver["score"] = score
         ver["comment"] = comment
+        ver["чек"] = sorted(int(x) for x in (check or []))
+        ver["время_вердикта"] = datetime.now().isoformat(timespec="seconds")
         status_map = {"Принято": "принято", "Принято с замечаниями": "принято",
                       "На доработку": "доработка", "Не принято": "отклонено"}
         sub["status"] = status_map.get(verdict, "сдано")
