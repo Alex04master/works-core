@@ -549,8 +549,19 @@ class Core:
         return True
 
     def task_for_brigade(self, task, brigade):
-        """Задание без выдачи — всем; с выдачей — только перечисленным бригадам."""
-        issued = (task or {}).get("выдано") or []
+        """Кому видно задание.
+
+        - «выдано» не задано: обычные задания видны всем, а сценарные
+          (с планом) ждут выдачи преподавателем;
+        - «выдано» = [] (выдано всем): видно всем;
+        - «выдано» = [бригады]: только перечисленным бригадам.
+        """
+        t = task or {}
+        issued = t.get("выдано")
+        if issued is None:
+            if (t.get("настройки") or {}).get("план"):
+                return False
+            return True
         if not issued:
             return True
         return (brigade or "").strip() in issued

@@ -138,8 +138,22 @@ def register(ctx):
         for k in ks:
             marks = [cid for cid, v in imported.items()
                      if isinstance(v, dict) and k in v]
-            mark = ('<p class="reason">Уже импортирован в курсы: %s</p>'
-                    % _e(", ".join(marks))) if marks else ""
+            mark = ""
+            if marks:
+                mark = ('<p class="reason">Уже импортирован в курсы: %s.</p>'
+                        % _e(", ".join(marks)))
+                for mc in marks:
+                    mark += (
+                        '<form method="post" '
+                        'action="/staff/scenarios/repair" style="display:inline">'
+                        '<input type="hidden" name="course" value="%s">'
+                        '<input type="hidden" name="kit" value="%s">'
+                        '<button class="btn-sm btn-secondary" '
+                        'title="Починить форму (план), привязку плана и '
+                        'материалы у ранее импортированного занятия">'
+                        'Обновить: %s</button></form> ' % (_e(mc), _e(k), _e(mc)))
+                mark += ('<p class="hint">После обновления задания снова ждут '
+                         'выдачи бригадам.</p>')
             cards += (
                 '<div class="staff-card"><h2>%s</h2>%s'
                 '<form onsubmit="return _imp(this)">'
@@ -207,6 +221,48 @@ function _imp(f){
             data = f.read()
         mime = mimetypes.guess_type(local)[0] or "application/octet-stream"
         handler._send_response(200, mime, data, encode=False)
+        return handler._SENT
+
+    # ── Починка ранее импортированного занятия ──────────────────────
+    @ctx.add_route("POST", "/staff/scenarios/repair", access="staff")
+    def repair_kit(handler, params):
+        data = handler._parse_post()
+        cid = data.get("course", "")
+        kit = _safe_name(data.get("kit", ""))
+        imported = ctx.kv_load("scenarios", {})
+        info = imported.get(cid, {}) if isinstance(imported.get(cid), dict) else {}
+        lid = (info.get(kit) or {}).get("lid", "")
+        lesson = ctx.get_lesson(lid) if lid else None
+        if not lesson:
+            handler._send_text(400, "not imported")
+            return handler._SENT
+        lesson["материалы"] = [
+            m for m in (lesson.get("материалы") or [])
+            if str(m.get("имя", "")).startswith(("02_", "05_", "06_"))]
+        n = 0
+        for t in ctx.list_tasks():
+            if t.get("lesson") != lid:
+                continue
+            st = t.setdefault("настройки", {})
+            if not st.get("план"):
+                st["план"] = t.get("title", "").split("·")[0].strip()
+            keys = [f.get("ключ") for f in t.get("форма", [])]
+            if "plan_data" not in keys:
+                calc = next((f for f in t.get("форма", [])
+                             if f.get("тип") == "textarea"), None)
+                if calc:
+                    calc["обязательно"] = True
+                t["форма"] = ([calc] if calc else
+                              [{"ключ": "calc", "тип": "textarea",
+                                "вопрос": "Расчёты, ведомость ШС, обоснование",
+                                "обязательно": True, "строк": 7}]) + [
+                    {"ключ": "plan_data", "тип": "hidden",
+                     "вопрос": "Размещение устройств на плане"}]
+            n += 1
+        ctx.save()
+        ctx.kv_save("scenarios", imported)
+        ctx.log("починен импорт %s/%s: заданий %d" % (cid, kit, n))
+        handler._send_text(200, "ok:%d" % n)
         return handler._SENT
 
     # ── Импорт: занятие + задания по карточкам ──────────────────────
@@ -325,7 +381,11 @@ function boot(){
   var EV=window.EVENT||{}, ALL=window.PLANS||[];
   var PL=null; for(var i=0;i<ALL.length;i++){if(ALL[i].id===PLAN_ID){PL=ALL[i];break}}
   var app=document.getElementById("app");
-  if(!PL){app.innerHTML='<p class="err">План не найден (комплект не содержит плана «'+_esc(PLAN_ID)+'»).</p>';return}
+  if(!PL){
+    app.innerHTML='<p class="err">План не найден'+(PLAN_ID?' («'+_esc(PLAN_ID)+'»)':'')+'.</p>'
+      +(ALL.length?'<p class="hint">Доступные планы: '+ALL.map(function(p){return _esc(p.id)}).join(', ')+'</p>'
+                  :'<p class="hint">Файл plans.js не найден в материалах занятия.</p>');
+    return}
   var LEG=EV.legend||[];
   var xs=[],ys=[];PL.rooms.forEach(function(r){xs.push(r.x,r.x+r.w);ys.push(r.y,r.y+r.h)});
   var mg=0.6,x0=Math.min.apply(null,xs)-mg,y0=Math.min.apply(null,ys)-mg;
@@ -432,6 +492,10 @@ if(document.readyState!=="loading")boot();else document.addEventListener("DOMCon
                     "<p>Это задание выдано другой бригаде.</p>")
                 return handler._SENT
         plan_id = (task.get("настройки") or {}).get("план", "")
+        if not plan_id:
+            # задания, импортированные раньше: id карточки — в начале названия
+            # («СЦ-01 · Палатный корпус…»)
+            plan_id = task.get("title", "").split("·")[0].strip()
         ro = False
         init = None
         if is_staff:

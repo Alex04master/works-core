@@ -161,9 +161,12 @@ try {
   $scnTid = ($scnOut -split '\s+')[0]
   $scnLid = ($scnOut -split '\s+')[1]
   if ($LASTEXITCODE -ne 0) { Write-Output 'FAIL scenario kit files'; $script:fail++ } else { Write-Output 'OK   scenario kit files (mats 02/05/06, plans stripped)' }
+  $tp0 = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
+  Chk 'scenario task waits for issue' ($tp0 -notmatch 'task-form')
+  curl.exe -s -b "$PWD\_staff.txt" -d "task=$scnTid" -d 'all=on' 'http://localhost:8099/staff/task_issue' | Out-Null
   $tp3 = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
+  Chk 'issue-all makes task visible' ($tp3 -match 'task-form')
   Chk 'scenario task has plan widget' ($tp3 -match 'src="/plan/')
-  Chk 'scenario task handout links' ($tp3 -match 'target="_blank"')
   $pp = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/plan/$scnTid"
   Chk 'plan widget renders' ($pp -match 'wcplan_' -and $pp -match 'SK-1')
   curl.exe -s -b "$PWD\_ck.txt" -F "task=$scnTid" -F 'calc=test calc' -F 'plan_data=<_plan_data.json' 'http://localhost:8099/api/submit' | Out-Null
@@ -189,6 +192,12 @@ try {
   Chk 'plan view blocked for other brigade' ($pv9 -notmatch 'wcplan_')
   $st2 = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/task/$scnTid"
   Chk 'staff issue card present' ($st2 -match 'task_issue')
+  $rp = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/scenarios"
+  Chk 'repair button shown' ($rp -match 'scenarios/repair')
+  $rr = curl.exe -s -b "$PWD\_staff.txt" -d "course=c1" -d 'kit=_smoketest_kit' 'http://localhost:8099/staff/scenarios/repair'
+  Chk 'repair runs' ($rr -match 'ok:')
+  $sp4 = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
+  Chk 'repair keeps form intact' ($sp4 -match 'name="plan_data"')
   curl.exe -s -b "$PWD\_staff.txt" -d "task=$scnTid" -d 'all=on' 'http://localhost:8099/staff/task_issue' | Out-Null
   $t9b = curl.exe -s -b "$PWD\_ck9.txt" "http://localhost:8099/task/$scnTid"
   Chk 'issue-all restores visibility' ($t9b -match 'task-form')

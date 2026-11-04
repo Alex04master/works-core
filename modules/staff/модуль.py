@@ -394,26 +394,41 @@ def register(ctx):
                 ' <span class="state-сбой">(истёк)</span>'
                 if datetime.now() > dl else ""))
 
-        issued = set(task.get("выдано") or [])
+        issued_val = task.get("выдано")
+        issued_set = set(issued_val) if isinstance(issued_val, list) else None
+        is_scenario = bool((task.get("настройки") or {}).get("план"))
         brigades = sorted({(s.get("бригада") or "").strip()
                            for s in ctx.list_students()
                            if (s.get("бригада") or "").strip()})
         brig_rows = "".join(
             '<label class="cb-label"><input type="checkbox" name="brigade" '
             'value="%s"%s> 👥 %s</label>' % (
-                _e(b), " checked" if b in issued else "", _e(b))
+                _e(b), " checked" if issued_set and b in issued_set else "",
+                _e(b))
             for b in brigades) or \
-            '<p class="hint">Бригад пока нет — студенты создают их на странице курса.</p>'
+            '<p class="hint">Бригад пока нет — студенты регистрируют их на странице курса.</p>'
+        if issued_set is None and is_scenario:
+            status_html = ('<p class="reason">⏳ Сценарное задание ещё не '
+                           'выдано — студенты его не видят. Отметьте бригады '
+                           'или «выдать всем».</p>')
+        elif issued_set is None:
+            status_html = '<p class="hint">Обычное задание — видно всем.</p>'
+        elif not issued_set:
+            status_html = '<p class="hint">✅ Выдано всем студентам курса.</p>'
+        else:
+            status_html = ('<p class="hint">Выдано бригадам: %s.</p>'
+                           % _e(", ".join(sorted(issued_set))))
+        all_checked = " checked" if issued_set is not None and not issued_set else ""
         issue_card = (
             '<form method="post" action="/staff/task_issue" class="staff-card">'
             '<h2>📤 Выдача бригадам</h2>'
-            '<p class="hint">Отметьте бригады, которым выдано задание. '
-            'Пока ничего не отмечено — задание видно всем студентам курса.</p>'
+            '%s'
+            '<p class="hint">Отметьте бригады, которым выдано задание.</p>'
             '%s'
             '<p><label class="cb-label"><input type="checkbox" name="all"%s> '
-            'Выдать всем (снять выдачу)</label></p>'
+            'Выдать всем</label></p>'
             '<p><button>Сохранить выдачу</button></p></form>'
-        ) % (brig_rows, " checked" if not issued else "")
+        ) % (status_html, brig_rows, all_checked)
         body = (
             '<p><a href="/staff/lesson/%s">%s</a></p>'
             '<div class="staff-card">'

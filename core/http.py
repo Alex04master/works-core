@@ -772,7 +772,7 @@ class WorksServer(http.server.ThreadingHTTPServer):
                     act = '<span class="reason">мест нет</span>'
                 rows += ('<li>👥 <b>%s</b> — %d/%d %s</li>'
                          % (_e(b), len(members), bmax, act))
-            bhtml = ('<h2>👷 Бригады</h2>%s%s<ul>%s</ul>'
+            bhtml = ('<h2>👷 Регистрация бригады</h2>%s%s<ul>%s</ul>'
                      '<form method="post" action="/brigade" class="task-form" '
                      'style="padding:14px 18px">'
                      '<input type="hidden" name="course" value="%s">'
@@ -781,8 +781,9 @@ class WorksServer(http.server.ThreadingHTTPServer):
                      '<input type="text" name="name" maxlength="40" '
                      'placeholder="например, Искра" required></label></p>'
                      '<p><button>Создать бригаду</button></p></form>'
-                     '<p class="hint">Состав — до %d чел. Бригада сдаёт '
-                     'один отчёт на всех.</p>'
+                     '<p class="hint">Состав — до %d чел. Отчёт — один на '
+                     'всех. Задания бригада получает, когда преподаватель '
+                     'их выдаст.</p>'
                      ) % (bmsg, mine_html,
                           rows or '<li class="hint">Пока нет ни одной бригады.</li>',
                           _e(cid), bmax)

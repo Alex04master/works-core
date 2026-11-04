@@ -88,6 +88,17 @@ try:
     lp = curl("-b", "_e2e_s1.txt", "http://localhost:8093/lesson/%s" % lid)
     chk("lesson page: no Materials block", "<h2>Материалы</h2>" not in lp)
     tid = t0["id"]
+    chk("lesson list hides waiting task",
+        ('href="/task/%s"' % tid) not in lp)
+    tp0 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
+    chk("waiting: scenario task hidden until issued",
+        "task-form" not in tp0 and "не выдано" in tp0)
+    mjs = curl("http://localhost:8093/materials/c1/%s/event.js" % lid)
+    pls = curl("http://localhost:8093/materials/c1/%s/plans.js" % lid)
+    chk("widget data served (event.js/plans.js)",
+        "window.EVENT" in mjs[:400] and "window.PLANS" in pls[:400])
+    curl("-b", "_e2e_staff.txt", "-d", "task=%s" % tid, "-d", "all=on",
+         "http://localhost:8093/staff/task_issue")
     tp = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
     chk("task: no links block (content inline)", 'target="_blank"' not in tp)
     chk("task: plan widget iframe", 'src="/plan/%s"' % tid in tp)
@@ -117,7 +128,23 @@ try:
     pv = curl("-b", "_e2e_staff.txt",
               "http://localhost:8093/plan/%s?sub=%s__s1&v=1" % (tid, tid))
     chk("teacher plan view read-only",
-        "RO=true" in pv and '"t": "smoke"' in pv.replace(", ", ", "))    # выдача бригадам: сценарий видят только назначенные бригады
+        "RO=true" in pv and '"t": "smoke"' in pv.replace(", ", ", "))
+    rr = curl("-b", "_e2e_staff.txt", "-d", "course=c1",
+              "-d", "kit=Больница_день_ОПС",
+              "http://localhost:8093/staff/scenarios/repair")
+    chk("repair runs", rr.startswith("ok:"))
+    files = [f for f in glob.glob("_scntest/*.json")
+             if not os.path.basename(f).startswith("_")]
+    db = json.loads(io.open(files[0], encoding="utf-8").read())
+    les2 = [l for l in db["занятия"] if "больнице" in l.get("title", "")][0]
+    mats2 = [m["имя"] for m in (les2.get("материалы") or [])]
+    chk("repair: materials still 02/05/06", len(mats2) == 3)
+    t2r = [t for t in db["задания"] if t.get("lesson") == les2["id"]
+           and t["id"] == tid][0]
+    chk("repair: plan binding intact",
+        t2r.get("настройки", {}).get("план") == "СЦ-01")
+
+    # выдача бригадам: сценарий видят только назначенные бригады
     curl("-b", "_e2e_staff.txt", "-d", "task=%s" % tid,
          "-d", "brigade=Iskra", "http://localhost:8093/staff/task_issue")
     tp2 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
