@@ -31,23 +31,26 @@ class Upload:
 
 DRAFT_JS = """<script>
 (function(){
-  var K='draft_'+location.pathname;
+  var U='__SID__';
+  var K='draft_'+U+location.pathname;
   if(/[?&]ok=1/.test(location.search)){try{localStorage.removeItem(K)}catch(e){}return}
   var f=document.querySelector('form.task-form');if(!f)return;
-  try{
-    var d=JSON.parse(localStorage.getItem(K)||'{}');
-    for(var i=0;i<f.elements.length;i++){var el=f.elements[i];
-      if(!el.name||el.type=='file'||el.type=='submit')continue;
-      if(el.type=='radio'||el.type=='checkbox'){
-        var v=d[el.name];
-        el.checked=(v===undefined)?false:(Array.isArray(v)?v.indexOf(el.value)>=0:v===el.value);
-      }else if(d[el.name]!==undefined){el.value=d[el.name];}
-    }
-  }catch(e){}
+  if(!f.querySelector('[name=wc_prefill]')){
+    try{
+      var d=JSON.parse(localStorage.getItem(K)||'{}');
+      for(var i=0;i<f.elements.length;i++){var el=f.elements[i];
+        if(!el.name||el.type=='file'||el.type=='submit')continue;
+        if(el.type=='radio'||el.type=='checkbox'){
+          var v=d[el.name];
+          el.checked=(v===undefined)?false:(Array.isArray(v)?v.indexOf(el.value)>=0:v===el.value);
+        }else if(d[el.name]!==undefined){el.value=d[el.name];}
+      }
+    }catch(e){}
+  }
   function save(){
     try{
       var d={};new FormData(f).forEach(function(v,k){
-        if(k=='task'||typeof v!='string')return;
+        if(k=='task'||k=='wc_prefill'||typeof v!='string')return;
         if(d[k]===undefined)d[k]=v;
         else if(Array.isArray(d[k]))d[k].push(v);
         else d[k]=[d[k],v];
@@ -949,7 +952,12 @@ class WorksServer(http.server.ThreadingHTTPServer):
                     'преподавателя выдать его.</p>')
             lesson = handler._core.lesson(handler._core.task(tid).get("lesson", ""))
             course = handler._core.course(lesson.get("course", "")) if lesson else None
-            form_html = handler._core.task_form_html(task_data)
+            sub = handler._core.sub(tid, sid)
+            _prev = handler._core.latest(sub) if sub else {}
+            _pvals = (_prev.get("answers") or {}) if _prev else {}
+            _pf = ('<input type="hidden" name="wc_prefill" value="1">'
+                   if _pvals else "")
+            form_html = handler._core.task_form_html(task_data, values=_pvals)
             dl = task_deadline(handler._core.task(tid))
             dl_html = ""
             if dl:
@@ -966,7 +974,6 @@ class WorksServer(http.server.ThreadingHTTPServer):
                     dl_html = ('<div class="notice">⏰ Срок сдачи: %s — истёк, '
                                'работа будет помечена как просроченная.</div>'
                                % _e(when))
-            sub = handler._core.sub(tid, sid)
             sub_info = ""
             if sub:
                 v = handler._core.latest(sub)
@@ -1068,20 +1075,28 @@ class WorksServer(http.server.ThreadingHTTPServer):
                         '<script>(function(){var f=document.querySelector'
                         "('form.task-form');if(!f)return;"
                         "f.addEventListener('submit',function(){try{"
-                        "var v=localStorage.getItem('wcplan_%s')||'[]';"
+                        "var v=localStorage.getItem('wcplan_%s');"
                         "var i=f.querySelector('[name=plan_data]');"
-                        "if(i)i.value=v;}catch(e){}});})();</script>"
+                        "if(v!==null&&i)i.value=v;}catch(e){}});})();</script>"
                     ) % (_e(tid), _e(tid))
+            carry_html = ""
+            if isinstance(_prev.get("files"), dict) and _prev.get("files"):
+                carry_html = ('<div class="notice carry-note">📎 В прошлой '
+                              'версии были прикреплены файлы — они не '
+                              'переносятся автоматически, прикрепите их '
+                              'заново при необходимости.</div>')
             body = ('<p><a href="/lesson/%s">%s</a></p>'
-                    '<div class="task-desc">%s</div>%s%s%s'
+                    '<div class="task-desc">%s</div>%s%s%s%s'
                     '<form method="post" action="/api/submit"'
                     ' enctype="multipart/form-data" class="task-form">'
-                    '<input type="hidden" name="task" value="%s">%s%s'
-                    "<p><button>Отправить</button></p></form>" + DRAFT_JS) % (
+                    '<input type="hidden" name="task" value="%s">%s%s%s'
+                    "<p><button>Отправить</button></p></form>"
+                    + DRAFT_JS.replace("__SID__", _e(sid))) % (
                 _e(lesson["id"] if lesson else ""),
                 _e(lesson["title"] if lesson else ""),
                 _md(task_data.get("описание", "")),
-                scn_html, dl_html, sub_info, tid, form_html, br_html)
+                scn_html, dl_html, carry_html, sub_info, tid, form_html,
+                br_html, _pf)
             return handler._core.page(task_data.get("title", ""), body,
                                       course=course, lesson=lesson)
 
@@ -1103,7 +1118,7 @@ class WorksServer(http.server.ThreadingHTTPServer):
             files = {}
             brigade = ""
             for k, v in data.items():
-                if k in ("task", "submit"):
+                if k in ("task", "submit", "wc_prefill"):
                     continue
                 if (isinstance(v, list) and v
                         and all(hasattr(x, "data") and hasattr(x, "name")

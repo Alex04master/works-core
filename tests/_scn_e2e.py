@@ -142,6 +142,10 @@ try:
         "mx-tbl" in lmx and "mx-sent" in lmx)
     ms0 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/mysub/%s" % tid)
     chk("my sub page renders", "sub-status" in ms0)
+    tpf = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
+    chk("form prefilled with previous answers",
+        "расчёт готов" in tpf and "&quot;smoke&quot;" in tpf)
+    chk("files carry note shown", "carry-note" in tpf)
 
     # преподаватель: сводка + просмотр плана
     sp = curl("-b", "_e2e_staff.txt",
