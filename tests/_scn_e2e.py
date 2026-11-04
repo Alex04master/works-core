@@ -12,7 +12,7 @@ import time
 import urllib.parse
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 shutil.rmtree("_scntest", ignore_errors=True)
 proc = subprocess.Popen(
@@ -44,7 +44,7 @@ try:
                 "http://localhost:8093/scnfile/%s/event.js" % enc)
     chk("scnfile percent-encoded -> 200", head.startswith("HTTP/1.0 200"))
 
-    r = subprocess.run(["node", "_scn_export.js"], capture_output=True)
+    r = subprocess.run(["node", "tests/_scn_export.js"], capture_output=True)
     resp = curl("-b", "_e2e_staff.txt", "-H", "Content-Type: application/json",
                 "-d", "@_scn_real.json",
                 "http://localhost:8093/staff/scenarios/import")

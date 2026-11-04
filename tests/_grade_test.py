@@ -8,6 +8,7 @@ import sys
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)
+sys.path.insert(0, os.path.dirname(BASE))  # корень проекта: import core.*
 
 from core.store import Store
 from core.core import Core, _md, _parse_deadline, task_deadline

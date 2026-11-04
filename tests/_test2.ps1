@@ -7,7 +7,7 @@ python -X utf8 -c "import py_compile,glob; files=['server.py']+glob.glob('core/*
 if ($LASTEXITCODE -ne 0) { Write-Output 'COMPILE FAIL'; exit 1 }
 
 # 1) unit tests
-python -X utf8 _grade_test.py
+python -X utf8 tests\_grade_test.py
 if ($LASTEXITCODE -ne 0) { Write-Output 'UNIT FAIL'; exit 1 }
 
 if (Test-Path '_teststore') { Remove-Item -Recurse -Force '_teststore' }
@@ -41,7 +41,7 @@ try {
 
   # submit after deadline -> late flag stored
   curl.exe -s -b "$PWD\_ck.txt" -F 'task=t1' -F 'width=24' -F 'length=18' -F 'height=4.2' -F 'detector_type=IP212' -F 'detectors_num=6' -F 'loops=2' -F 'justification=late-test' 'http://localhost:8099/api/submit' | Out-Null
-  python -X utf8 _chk_late.py
+  python -X utf8 tests\_chk_late.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   late flag stored' } else { Write-Output 'FAIL late flag stored'; $script:fail++ }
   $sp = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/staff/sub/t1__s1'
   Chk 'sub page shows versions' ($sp -match 'v1')
@@ -65,13 +65,13 @@ try {
 
   # CSV export
   curl.exe -s -o "$PWD\_exp.csv" -b "$PWD\_staff.txt" 'http://localhost:8099/staff/export/course/c1'
-  python -X utf8 _chk_export.py
+  python -X utf8 tests\_chk_export.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   export csv' } else { Write-Output 'FAIL export csv'; $script:fail++ }
 
   # import group from txt (2 new, 2 duplicates skipped)
-  $im = curl.exe -s -b "$PWD\_staff.txt" -F 'course=c1' -F 'group=' -F 'text=' -F 'file=@_group.txt' 'http://localhost:8099/staff/import_group'
+  $im = curl.exe -s -b "$PWD\_staff.txt" -F 'course=c1' -F 'group=' -F 'text=' -F 'file=@tests\_group.txt' 'http://localhost:8099/staff/import_group'
   Chk 'import redirect report' ($im -match 'imp=2/2')
-  python -X utf8 _chk_import.py
+  python -X utf8 tests\_chk_import.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   import group' } else { Write-Output 'FAIL import group'; $script:fail++ }
 
   # new imported student can log in (s7 = Novikov)
@@ -79,9 +79,9 @@ try {
   Chk 'imported student login' ($s7 -match 'Set-Cookie')
 
   # ---- brigades: one report for the whole team ----
-  $imb = curl.exe -s -b "$PWD\_staff.txt" -F 'course=c1' -F 'group=' -F 'text=' -F 'file=@_brig.txt' 'http://localhost:8099/staff/import_group'
+  $imb = curl.exe -s -b "$PWD\_staff.txt" -F 'course=c1' -F 'group=' -F 'text=' -F 'file=@tests\_brig.txt' 'http://localhost:8099/staff/import_group'
   Chk 'brigade import redirect' ($imb -match 'imp=2/0')
-  python -X utf8 _chk_brig.py
+  python -X utf8 tests\_chk_brig.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   brigade field imported' } else { Write-Output 'FAIL brigade field imported'; $script:fail++ }
 
   curl.exe -s -b "$PWD\_staff.txt" -d 'course=c1' 'http://localhost:8099/staff/enroll_all' | Out-Null
@@ -95,7 +95,7 @@ try {
   Chk 'brigade select shown for member' ($p9 -match 'name="brigade"')
 
   curl.exe -s -b "$PWD\_ck9.txt" -F 'task=t1' -F 'brigade=BR-1' -F 'width=10' -F 'length=10' -F 'height=2' -F 'detector_type=IP212' -F 'detectors_num=4' -F 'loops=1' -F 'justification=brigade-report' 'http://localhost:8099/api/submit' | Out-Null
-  python -X utf8 _chk_brig2.py
+  python -X utf8 tests\_chk_brig2.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   brigade participants' } else { Write-Output 'FAIL brigade participants'; $script:fail++ }
 
   $b2 = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/board'
@@ -129,15 +129,15 @@ try {
   # ---- self-service brigades (students name them, max by teacher) ----
   curl.exe -s -b "$PWD\_staff.txt" -d 'course=c1' -d 'max=1' 'http://localhost:8099/staff/brigade_max' | Out-Null
   curl.exe -s -b "$PWD\_ck.txt" -d 'course=c1' -d 'act=create' -d 'name=TEST-TEAM' 'http://localhost:8099/brigade' | Out-Null
-  python -X utf8 _chk_brig3.py
+  python -X utf8 tests\_chk_brig3.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   brigade created by student' } else { Write-Output 'FAIL brigade created by student'; $script:fail++ }
   curl.exe -s -c "$PWD\_ck2.txt" -d 'student=s2' -d 'next=/' 'http://localhost:8099/_login' | Out-Null
   curl.exe -s -b "$PWD\_ck2.txt" -d 'course=c1' -d 'act=join' -d 'name=TEST-TEAM' 'http://localhost:8099/brigade' | Out-Null
-  python -X utf8 _chk_brig4.py
+  python -X utf8 tests\_chk_brig4.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   brigade max enforced' } else { Write-Output 'FAIL brigade max enforced'; $script:fail++ }
   curl.exe -s -b "$PWD\_staff.txt" -d 'course=c1' -d 'max=5' 'http://localhost:8099/staff/brigade_max' | Out-Null
   curl.exe -s -b "$PWD\_ck2.txt" -d 'course=c1' -d 'act=join' -d 'name=TEST-TEAM' 'http://localhost:8099/brigade' | Out-Null
-  python -X utf8 _chk_brig5.py
+  python -X utf8 tests\_chk_brig5.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   joined after max raised' } else { Write-Output 'FAIL joined after max raised'; $script:fail++ }
   $cp2 = curl.exe -s -b "$PWD\_ck.txt" 'http://localhost:8099/course/c1'
   Chk 'brigade box on course page' ($cp2 -match 'value="create"')
@@ -145,19 +145,19 @@ try {
   # ---- scenarios module ----
   $scp = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/staff/scenarios'
   Chk 'scenarios page lists kits' ($scp -match 'scenarios/import')
-  curl.exe -s -b "$PWD\_staff.txt" -H 'Content-Type: application/json' -d '@_scn.json' 'http://localhost:8099/staff/scenarios/import' | Out-Null
-  python -X utf8 _chk_scn.py
+  curl.exe -s -b "$PWD\_staff.txt" -H 'Content-Type: application/json' -d '@tests\_scn.json' 'http://localhost:8099/staff/scenarios/import' | Out-Null
+  python -X utf8 tests\_chk_scn.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   scenario import' } else { Write-Output 'FAIL scenario import'; $script:fail++ }
   $h1b = curl.exe -s -b "$PWD\_ck.txt" 'http://localhost:8099/course/c1'
   Chk 'waiting lesson hidden on course page' ($h1b -notmatch 'SCN-TEST')
   $h1b | Out-File -Encoding utf8 "$PWD\_tmp_page.html"
-  python -X utf8 _chk_nomat.py
+  python -X utf8 tests\_chk_nomat.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   materials hidden from students' } else { Write-Output 'FAIL materials hidden from students'; $script:fail++ }
 
   # ---- interactive plan widget (fake kit with files) ----
-  python -X utf8 _mk_kit.py make | Out-Null
-  curl.exe -s -b "$PWD\_staff.txt" -H 'Content-Type: application/json' -d '@_smoke_kit.json' 'http://localhost:8099/staff/scenarios/import' | Out-Null
-  $scnOut = (python -X utf8 _chk_scn2.py)
+  python -X utf8 tests\_mk_kit.py make | Out-Null
+  curl.exe -s -b "$PWD\_staff.txt" -H 'Content-Type: application/json' -d '@tests\_smoke_kit.json' 'http://localhost:8099/staff/scenarios/import' | Out-Null
+  $scnOut = (python -X utf8 tests\_chk_scn2.py)
   $scnTid = ($scnOut -split '\s+')[0]
   $scnLid = ($scnOut -split '\s+')[1]
   if ($LASTEXITCODE -ne 0) { Write-Output 'FAIL scenario kit files'; $script:fail++ } else { Write-Output 'OK   scenario kit files (mats 02/05/06, plans stripped)' }
@@ -169,9 +169,9 @@ try {
   Chk 'scenario task has plan widget' ($tp3 -match 'src="/plan/')
   $pp = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/plan/$scnTid"
   Chk 'plan widget renders' ($pp -match 'wcplan_' -and $pp -match 'SK-1')
-  curl.exe -s -b "$PWD\_ck.txt" -F "task=$scnTid" -F 'calc=test calc' -F 'plan_data=<_plan_data.json' 'http://localhost:8099/api/submit' | Out-Null
+  curl.exe -s -b "$PWD\_ck.txt" -F "task=$scnTid" -F 'calc=test calc' -F 'plan_data=<tests\_plan_data.json' 'http://localhost:8099/api/submit' | Out-Null
   $env:PLANKEY = "$scnTid" + '__s1'
-  python -X utf8 _chk_subplan.py
+  python -X utf8 tests\_chk_subplan.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   plan data stored with report' } else { Write-Output 'FAIL plan data stored with report'; $script:fail++ }
   $sp3 = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/sub/${scnTid}__s1"
   Chk 'sub page links to plan view' ($sp3 -match '/plan/')
@@ -220,7 +220,7 @@ try {
   curl.exe -s -b "$PWD\_staff.txt" -d "lesson=$scnLid" -d "alltask=$scnTid" 'http://localhost:8099/staff/issue_mass' | Out-Null
   $m0 = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
   Chk 'mass issue-all restores' ($m0 -match 'task-form')
-  python -X utf8 _mk_kit.py remove | Out-Null
+  python -X utf8 tests\_mk_kit.py remove | Out-Null
 
 } finally {
   Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue

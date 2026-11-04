@@ -10,10 +10,12 @@ dist/
 данные/
 *.log
 
-# Temp / test
-_*
+# Temp / test (только в корне; tests/ отслеживается)
+/_*
 _temp/
 
 # OS
 Thumbs.db
 .DS_Store
+# Архивы
+*.zip
