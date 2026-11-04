@@ -323,6 +323,19 @@ try {
   curl.exe -s -o "$PWD\_log.csv" -b "$PWD\_staff.txt" 'http://localhost:8099/staff/log/export'
   python -X utf8 tests\_chk_logcsv.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   audit csv export' } else { Write-Output 'FAIL audit csv export'; $script:fail++ }
+
+  # ---- course package: export + import ----
+  $cpg = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/staff/course/c1'
+  Chk 'export button on course page' ($cpg -match 'course_export')
+  $hpg = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/staff'
+  Chk 'import course card on home' ($hpg -match 'course_import')
+  curl.exe -s -o "$PWD\_pkg.zip" -b "$PWD\_staff.txt" 'http://localhost:8099/staff/course_export/c1'
+  python -X utf8 tests\_chk_pkg.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   course package built' } else { Write-Output 'FAIL course package'; $script:fail++ }
+  $ri = curl.exe -s -i -b "$PWD\_staff.txt" -F 'pkgfile=@_pkg.zip' -F 'results=on' 'http://localhost:8099/staff/course_import'
+  Chk 'course import redirects' ($ri -match 'Location: /staff/course/')
+  python -X utf8 tests\_chk_pkgimp.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   imported course complete' } else { Write-Output 'FAIL imported course'; $script:fail++ }
 } finally {
   Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 }

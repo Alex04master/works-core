@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import urllib.parse
+import zipfile
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -210,6 +211,48 @@ try:
         and any("Проверено" in (it.get("what") or "") for it in fdj))
     bdp = curl("-b", "_e2e_staff.txt", "http://localhost:8093/board")
     chk("board toast widget", "toastbox" in bdp and "/board/feed" in bdp)
+
+    # пакет курса: экспорт и импорт
+    subprocess.run(["curl.exe", "-s", "-o", "_exp_course.zip", "-b",
+                    "_e2e_staff.txt",
+                    "http://localhost:8093/staff/course_export/c1"],
+                   capture_output=True)
+    zfp = zipfile.ZipFile("_exp_course.zip")
+    chk("package: manifest + tasks + handout",
+        json.loads(zfp.read("пакет.json").decode("utf-8"))["формат"]
+        == "works-core-курс"
+        and len(json.loads(zfp.read("задания.json").decode("utf-8"))) >= 6
+        and any(n.startswith("раздатка/") for n in zfp.namelist()))
+    zfp.close()
+    subprocess.run(["curl.exe", "-s", "-i", "-b", "_e2e_staff.txt",
+                    "-F", "pkgfile=@_exp_course.zip", "-F", "results=on",
+                    "http://localhost:8093/staff/course_import"],
+                   capture_output=True)
+    files = [f for f in glob.glob("_scntest/*.json")
+             if not os.path.basename(f).startswith("_")]
+    db = json.loads(io.open(files[0], encoding="utf-8").read())
+    c2 = [c for c in db["курсы"] if c["id"] != "c1"][-1]
+    lids2 = [l for l in db["занятия"] if l.get("course") == c2["id"]]
+    lscn = [l for l in lids2 if "больнице" in l.get("title", "")]
+    chk("imported course: lesson carried", len(lscn) == 1)
+    lid2 = lscn[0]["id"]
+    tks2 = [t for t in db["задания"] if t.get("lesson") == lid2]
+    chk("imported course: 6 tasks", len(tks2) == 6)
+    chk("imported: plan binding kept",
+        any(t.get("настройки", {}).get("план") == "СЦ-01" for t in tks2))
+    tset2 = {t["id"] for t in tks2}
+    sub2 = [s for s in db["сдачи"].values() if s.get("task") in tset2]
+    chk("imported: submissions remapped",
+        len(sub2) >= 1 and sub2[0]["key"] == "%s__s1" % sub2[0]["task"])
+    mdir = os.path.join("_scntest", "раздатка", c2["id"], lid2)
+    chk("imported: handout copied",
+        os.path.isfile(os.path.join(mdir, "plans.js")))
+    pls2 = curl("http://localhost:8093/materials/%s/%s/plans.js"
+                % (c2["id"], lid2))
+    chk("imported: plans.js served", "window.PLANS" in pls2[:400])
+    vdir = os.path.join("_scntest", "сдачи", sub2[0]["key"], "v1")
+    chk("imported: submission files copied",
+        any(f.startswith("firmware") for f in os.listdir(vdir)))
 
     lf = glob.glob("_scntest/лог/*.jsonl")
     chk("audit log written", bool(lf))
