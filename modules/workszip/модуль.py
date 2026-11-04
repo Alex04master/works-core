@@ -13,7 +13,6 @@ import os
 import re
 import urllib.parse
 import zipfile
-from datetime import datetime
 
 
 def _e(v):
@@ -126,6 +125,9 @@ def register(ctx):
                 names.append(st["fio"] if st else str(pid))
             lines.append("Бригада: %s — участники: %s"
                          % (brig, ", ".join(names) or "-"))
+            st0 = students.get(s.get("student", ""))
+            if st0:
+                lines.append("Сдал(и): %s" % st0.get("fio", ""))
         else:
             st = students.get(s.get("student", ""))
             if st:

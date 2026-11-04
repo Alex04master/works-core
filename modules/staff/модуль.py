@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """Модуль «Панель преподавателя»: управление курсами, занятиями, заданиями, студентами."""
 import json
-import os
 import urllib.parse
 from datetime import datetime
 

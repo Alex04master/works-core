@@ -8,7 +8,6 @@
 - Шаблоны хранятся в данных модуля (данные/модули/tasktpl).
 """
 import json
-import urllib.parse
 
 
 def _e(v):
