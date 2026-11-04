@@ -87,6 +87,9 @@ try {
   curl.exe -s -b "$PWD\_staff.txt" -d 'course=c1' 'http://localhost:8099/staff/enroll_all' | Out-Null
   $cp = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/staff/course/c1'
   Chk 'staff table shows brigade editor' ($cp -match 'name="brigade"')
+  Chk 'students list collapsible' ($cp -match 'stu-list')
+  Chk 'students list search' ($cp -match 'stuFilt' -and $cp -match 'data-s=')
+  Chk 'enroll list collapsible' ($cp -match 'tb_enroll')
 
   $p1b = curl.exe -s -b "$PWD\_ck.txt" 'http://localhost:8099/task/t1'
   Chk 'no brigade select for solo student' ($p1b -notmatch 'name="brigade"')

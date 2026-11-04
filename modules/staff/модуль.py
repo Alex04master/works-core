@@ -119,8 +119,10 @@ def register(ctx):
         student_rows = ""
         for s in students:
             brig = (s.get("бригада") or "").strip()
+            _ds = _e((s["fio"] + " " + s.get("group", "") + " " + brig)
+                     .strip().lower())
             student_rows += (
-                '<tr><td>%s</td><td>%s</td>'
+                '<tr class="stu-row" data-s="%s"><td>%s</td><td>%s</td>'
                 '<td><form method="post" action="/staff/student_brigade" '
                 'style="display:inline;white-space:nowrap">'
                 '<input type="hidden" name="student" value="%s">'
@@ -130,29 +132,52 @@ def register(ctx):
                 '<button class="btn-sm">💾</button></form></td>'
                 '<td><a href="/staff/delete/student/%s" '
                 'onclick="%s" class="btn btn-danger btn-sm">X</a></td></tr>') % (
-                    _e(s["fio"]), _e(s.get("group", "")),
+                    _ds, _e(s["fio"]), _e(s.get("group", "")),
                     _e(s["id"]), _e(cid), _e(brig), _e(s["id"]), ds)
 
         student_table = ""
         if students:
             student_table = (
-                '<table class="staff-table">'
+                '<details class="stu-list" open>'
+                '<summary>📋 Студенты (%d) — нажмите, чтобы сверить'
+                '</summary>'
+                '<p style="margin:10px 0">'
+                '<input type="text" class="stu-filter" data-tb="tb_students" '
+                'data-cnt="cnt_students" oninput="stuFilt(this)" '
+                'placeholder="Поиск: ФИО, группа, бригада…" '
+                'style="max-width:340px;display:inline-block"> '
+                '<span class="reason" id="cnt_students"></span></p>'
+                '<table class="staff-table" id="tb_students">'
                 '<tr><th>ФИО</th><th>Группа</th><th>Бригада</th>'
-                '<th></th></tr>%s</table>') % student_rows
+                '<th></th></tr>%s</table></details>'
+                '<script>'
+                'function stuFilt(inp){var q=inp.value.toLowerCase();'
+                'var tb=document.getElementById(inp.getAttribute("data-tb"));'
+                'var n=0,tot=0;'
+                'Array.prototype.forEach.call('
+                'tb.querySelectorAll("tr.stu-row"),function(tr){tot++;'
+                'var ok=!q||tr.getAttribute("data-s").indexOf(q)>=0;'
+                'tr.style.display=ok?"":"none";if(ok)n++;});'
+                'var c=document.getElementById(inp.getAttribute("data-cnt"));'
+                'if(c)c.textContent="показано: "+n+" из "+tot;}'
+                '</script>'
+            ) % (len(students), student_rows)
 
         enrolled = set(course.get("студенты") or [])
         enroll_rows = ""
         for s in students:
             in_course = s["id"] in enrolled
+            _es = _e((s["fio"] + " " + s.get("group", "")).strip().lower())
             enroll_rows += (
-                '<tr><td>%s</td><td>%s</td><td>%s</td>'
+                '<tr class="stu-row" data-s="%s"><td>%s</td><td>%s</td>'
+                '<td>%s</td>'
                 '<td><form method="post" action="/staff/enroll" '
                 'style="display:inline">'
                 '<input type="hidden" name="course" value="%s">'
                 '<input type="hidden" name="student" value="%s">'
                 '<input type="hidden" name="act" value="%s">'
                 '<button>%s</button></form></td></tr>') % (
-                    _e(s["fio"]), _e(s.get("group", "")),
+                    _es, _e(s["fio"]), _e(s.get("group", "")),
                     "✅" if in_course else "—",
                     _e(cid), _e(s["id"]),
                     "off" if in_course else "on",
@@ -161,12 +186,21 @@ def register(ctx):
             '<div class="staff-card"><h2>Зачисление</h2>'
             '<p class="hint">Зачислено: %d из %d. Если никого не зачислять '
             'и не задать группы — курс открыт всем.</p>'
-            '<table class="staff-table"><tr><th>ФИО</th><th>Группа</th>'
-            '<th>В курсе</th><th></th></tr>%s</table>'
+            '<details open><summary>Список зачисления (%d)</summary>'
+            '<p style="margin:10px 0">'
+            '<input type="text" class="stu-filter" data-tb="tb_enroll" '
+            'data-cnt="cnt_enroll" oninput="stuFilt(this)" '
+            'placeholder="Поиск: ФИО, группа…" '
+            'style="max-width:340px;display:inline-block"> '
+            '<span class="reason" id="cnt_enroll"></span></p>'
+            '<table class="staff-table" id="tb_enroll"><tr><th>ФИО</th>'
+            '<th>Группа</th><th>В курсе</th><th></th></tr>%s</table>'
+            '</details>'
             '<form method="post" action="/staff/enroll_all">'
             '<input type="hidden" name="course" value="%s">'
             '<p><button>Зачислить всех</button></p></form>'
-            '</div>') % (len(enrolled), len(students), enroll_rows, _e(cid))
+            '</div>') % (len(enrolled), len(students), len(students),
+                         enroll_rows, _e(cid))
 
         body = (
             '<p><a href="/staff">Все курсы</a></p>'
