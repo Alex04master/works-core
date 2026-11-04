@@ -102,8 +102,8 @@ class ModuleContext:
     def add_task(self, lesson_id, title, description="", form=None, settings=None):
         return self._core.new_task(lesson_id, title, description, form, settings)
 
-    def add_student(self, fio, group=""):
-        return self._core.add_student(fio, group)
+    def add_student(self, fio, group="", brigade=""):
+        return self._core.add_student(fio, group, brigade)
 
     def update_student(self, sid, fio=None, group=None):
         return self._core.update_student(sid, fio, group)
@@ -117,12 +117,33 @@ class ModuleContext:
     def delete_lesson(self, lid):
         return self._core.delete_lesson(lid)
 
+    def delete_task(self, tid):
+        """Удалить задание вместе со сдачами."""
+        return self._core.delete_task(tid)
+
+    def enroll(self, course_id, student_id):
+        """Зачислить студента на курс."""
+        return self._core.enroll(course_id, student_id)
+
+    def unenroll(self, course_id, student_id):
+        """Отчислить студента с курса."""
+        return self._core.unenroll(course_id, student_id)
+
+    def can_access(self, course_id, student_id):
+        return self._core.can_access(course_id, student_id)
+
     def update_course(self, cid, title):
         c = self._core.course(cid)
         if c:
             c["title"] = title
             self._core.store.save()
             return True
+
+    def course_group_add(self, cid, group):
+        return self._core.course_group_add(cid, group)
+
+    def course_group_remove(self, cid, group):
+        return self._core.course_group_remove(cid, group)
         return False
 
     def update_lesson(self, lid, title, materials=None):
@@ -151,8 +172,10 @@ class ModuleContext:
         return True
 
     # ── Сдача ────────────────────────────────────────────────────────
-    def submit(self, task_id, student_id, answers=None, files=None, note=""):
-        return self._core.collect(task_id, student_id, answers, files, note)
+    def submit(self, task_id, student_id, answers=None, files=None, note="",
+               brigade=""):
+        return self._core.collect(task_id, student_id, answers, files, note,
+                                  brigade=brigade)
 
     def set_verdict(self, task_id, student_id, verdict, score=None, comment=""):
         sub = self._core.sub(task_id, student_id)
@@ -162,8 +185,8 @@ class ModuleContext:
         ver["verdict"] = verdict
         ver["score"] = score
         ver["comment"] = comment
-        status_map = {"Принято": "принято", "На доработку": "доработка",
-                      "Не принято": "отклонено"}
+        status_map = {"Принято": "принято", "Принято с замечаниями": "принято",
+                      "На доработку": "доработка", "Не принято": "отклонено"}
         sub["status"] = status_map.get(verdict, "сдано")
         self._core.store.save()
         self._core.events.run("verdict.after", sub=sub, version=ver)
@@ -263,11 +286,10 @@ def load_modules(core, mods_dir):
 
 
 def register_json(ctx, man):
-    """Декларативный модуль (JSON-only)."""
+    """Декларативный модуль (JSON-only): правила автопроверки."""
     rules = man.get("rules") or []
     if rules:
-        def grade(task=None, answers=None):
-            from .core import _parse_field
+        def grade(task=None, answers=None, **kw):
             marks = {}
             passed = total = 0
             for r in rules:
@@ -284,8 +306,17 @@ def register_json(ctx, man):
                 total += 1
                 if ok:
                     passed += 1
-            return {"marks": marks, "score": float(passed), "total": total,
-                    "comment": f"автопроверка: {passed}/{total}"}
+            if not total:
+                return None
+            all_ok = passed == total
+            return {
+                "verdict": ("Принято (автопроверка)" if all_ok
+                            else "Автопроверка: %d/%d" % (passed, total)),
+                "score": round(100.0 * passed / total, 1),
+                "status": "принято" if all_ok else "доработка",
+                "comment": "автопроверка: %d/%d" % (passed, total),
+                "marks": marks,
+            }
         ctx.on("grade", grade)
 
 

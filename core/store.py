@@ -2,7 +2,9 @@
 """Хранилище: реестр JSON с атомарной записью."""
 import json
 import os
+import shutil
 import threading
+from datetime import datetime
 
 
 class Store:
@@ -27,7 +29,15 @@ class Store:
         try:
             with open(self.reg, encoding="utf-8") as f:
                 db = json.load(f)
-        except (OSError, ValueError):
+        except (OSError, ValueError) as ex:
+            # Битый реестр: сохранить копию, чтобы данные не пропали бесследно
+            if os.path.exists(self.reg):
+                try:
+                    bak = self.reg + ".битый-" + datetime.now().strftime("%Y%m%d-%H%M%S")
+                    shutil.copy2(self.reg, bak)
+                    print(f"!! Реестр повреждён ({ex}), копия сохранена: {bak}")
+                except OSError:
+                    pass
             return self._blank()
         bk = self._blank()
         for k, v in bk.items():

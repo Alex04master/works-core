@@ -32,6 +32,99 @@ def _nid(key, db):
     return key + str(n)
 
 
+def _is_upload(v):
+    """Загруженный файл: объект с атрибутами .name и .data."""
+    return hasattr(v, "data") and hasattr(v, "name")
+
+
+def _safe_name(name):
+    """Безопасное имя файла для сохранения на диск."""
+    base = os.path.basename(str(name or "").replace("\\", "/")).strip()
+    base = re.sub(r"[^\w.\-() ]", "_", base).strip()
+    return base[:80] or "file"
+
+
+def _md(text):
+    """Мини-Markdown -> HTML. Вход экранируется — XSS через описание невозможен.
+
+    Поддержка (как в templates/README.md): #/##/### заголовки,
+    "- " и "* " списки, "1. " нумерованные, **жирный**, *курсив*, `код`.
+    """
+    if not text:
+        return ""
+    import html as _html
+    esc = _html.escape(str(text), quote=False)
+
+    def inline(s):
+        s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+        s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
+        s = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<em>\1</em>", s)
+        return s
+
+    out = []
+    lst = None  # "ul" | "ol" | None
+
+    def close():
+        nonlocal lst
+        if lst:
+            out.append("</%s>" % lst)
+            lst = None
+
+    for raw in esc.split("\n"):
+        s = raw.strip()
+        if not s:
+            close()
+            continue
+        m = re.match(r"^(#{1,6})\s+(.*)$", s)
+        if m:
+            close()
+            lvl = 2 if len(m.group(1)) < 3 else 3
+            out.append("<h%d>%s</h%d>" % (lvl, inline(m.group(2)), lvl))
+            continue
+        m = re.match(r"^[-*]\s+(.*)$", s)
+        if m:
+            if lst != "ul":
+                close()
+                lst = "ul"
+                out.append("<ul>")
+            out.append("<li>%s</li>" % inline(m.group(1)))
+            continue
+        m = re.match(r"^\d+[.)]\s+(.*)$", s)
+        if m:
+            if lst != "ol":
+                close()
+                lst = "ol"
+                out.append("<ol>")
+            out.append("<li>%s</li>" % inline(m.group(1)))
+            continue
+        close()
+        out.append("<p>%s</p>" % inline(s))
+    close()
+    return "\n".join(out)
+
+
+def _parse_deadline(value):
+    """Строка срока -> datetime или None.
+
+    Форматы: ГГГГ-ММ-ДД[ ЧЧ:ММ[:СС]] или ДД.ММ.ГГГГ[ ЧЧ:ММ].
+    """
+    if not value:
+        return None
+    s = str(value).strip().replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d",
+                "%d.%m.%Y %H:%M", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def task_deadline(task):
+    """Срок сдачи задания (настройки.срок) -> datetime или None."""
+    return _parse_deadline((task or {}).get("настройки", {}).get("срок"))
+
+
 # ── События ────────────────────────────────────────────────────────────
 class Events:
     """Таблица подписчиков на события. Сбой одного не роняет ядро."""
@@ -163,6 +256,13 @@ def _parse_field(fd, raw):
                 return None, "не число"
             val = ""
 
+    if typ == "email" and val:
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", val):
+            return None, "неверный email"
+    if typ == "tel" and val:
+        if not re.match(r"^[+\d][\d\s\-()]{5,20}$", val):
+            return None, "неверный телефон"
+
     if req and not val:
         return None, "обязательное поле"
 
@@ -224,7 +324,8 @@ class Core:
             "настройки": task.get("настройки", {}),
         }
 
-    def collect(self, task_id, student_id, answers=None, files=None, note=""):
+    def collect(self, task_id, student_id, answers=None, files=None, note="",
+                brigade=""):
         """Принять сдачу работы.
 
         Возвращает (запись_сдачи, ошибка).
@@ -236,22 +337,34 @@ class Core:
         if not student:
             return None, "нет студента"
 
-        # Валидация полей
+        _lesson = self._get("занятия", task.get("lesson", ""))
+        if _lesson and not self.can_access(_lesson.get("course", ""), student_id):
+            return None, "нет доступа к заданию"
+
+        answers = answers or {}
+        files = files or {}
+
+        # Валидация полей (файлы обрабатываются отдельно)
         cleaned = {}
         errors = []
+        uploads = {}  # ключ -> загруженный файл
         for fd in task.get("форма", []):
             key = fd.get("ключ", "")
-            raw = None
-            if answers and key in answers:
-                raw = answers[key]
-            elif files and key in files:
-                raw = files[key]
-
-            val, err = _parse_field(fd, raw)
+            if fd.get("тип") == "file":
+                up = files.get(key)
+                if up is not None and _is_upload(up) and up.data:
+                    uploads[key] = up
+                elif fd.get("обязательно"):
+                    errors.append("%s: обязательное поле" % fd.get("вопрос", key))
+                continue
+            val, err = _parse_field(fd, answers.get(key))
             if err:
-                errors.append(f"{fd.get('вопрос', key)}: {err}")
-            elif val is not None:
+                errors.append("%s: %s" % (fd.get("вопрос", key), err))
+            elif val:
                 cleaned[key] = val
+
+        if errors:
+            return None, "; ".join(errors)
 
         # Хуки модулей перед сдачей
         for err in self.events.run("submit.before", task=task,
@@ -259,25 +372,56 @@ class Core:
             if err:
                 return None, str(err)
 
-        if errors:
-            return None, "; ".join(errors)
-
         # Сохраняем
         key = f"{task_id}__{student_id}"
         sub = self.db["сдачи"].setdefault(key, {
             "key": key, "task": task_id, "student": student_id,
             "participants": [student_id], "versions": [], "status": "сдано"})
+        if brigade:
+            sub["бригада"] = brigade
+            sub["participants"] = sorted({
+                s["id"] for s in self.db["студенты"]
+                if s.get("бригада", "") == brigade})
+        n = len(sub["versions"]) + 1
+
+        # Файлы — на диск в данные/сдачи
+        saved_files = {}
+        for fkey, up in uploads.items():
+            vdir = os.path.join(self.store.subs, key, f"v{n}")
+            os.makedirs(vdir, exist_ok=True)
+            fname = f"{fkey}__{_safe_name(up.name)}"
+            with open(os.path.join(vdir, fname), "wb") as f:
+                f.write(up.data)
+            saved_files[fkey] = {
+                "имя": up.name,
+                "файл": f"{key}/v{n}/{fname}".replace("\\", "/"),
+                "размер": len(up.data),
+            }
 
         ver = {
-            "n": len(sub["versions"]) + 1,
+            "n": n,
             "time": _now(),
             "answers": cleaned,
-            "files": list(files.keys()) if files else [],
+            "files": saved_files,
             "note": note,
             "verdict": None, "score": None, "comment": "",
         }
+        dl = task_deadline(task)
+        if dl and datetime.now() > dl:
+            ver["просрочено"] = True
+
         sub["versions"].append(ver)
         sub["status"] = "сдано"
+
+        # Автопроверка (модули с правилами, событие grade)
+        for res in self.events.run("grade", task=task, student=student,
+                                   sub=sub, version=ver, answers=cleaned):
+            if isinstance(res, dict) and res.get("verdict"):
+                ver["verdict"] = res["verdict"]
+                ver["score"] = res.get("score")
+                ver["comment"] = res.get("comment", "")
+                sub["status"] = res.get("status", "сдано")
+
         self.store.save()
 
         self.events.run("submit.after", task=task, student=student, sub=sub, version=ver)
@@ -310,7 +454,78 @@ class Core:
         return (sub.get("versions") or [{}])[-1]
 
     def courses(self, student_id=None):
-        return self.db.get("курсы", [])
+        """Курсы; для студента — только доступные.
+
+        Курс с пустым списком зачисленных открыт всем (обратная совместимость).
+        """
+        cs = self.db.get("курсы", [])
+        if student_id:
+            cs = [c for c in cs if self.can_access(c["id"], student_id)]
+        return cs
+
+    def can_access(self, course_id, student_id):
+        """Доступ: зачисление и/или группы; если пусто и то и то — открыт всем."""
+        c = self.course(course_id)
+        if not c:
+            return False
+        studs = c.get("студенты") or []
+        groups = [g for g in (c.get("группы") or []) if g]
+        if not studs and not groups:
+            return True
+        if student_id in studs:
+            return True
+        if groups:
+            s = self.student(student_id)
+            if s and (s.get("group", "") or "").strip() in groups:
+                return True
+        return False
+
+    def course_group_add(self, course_id, group):
+        """Открыть курс группе (список групп хранится в курсе)."""
+        c = self.course(course_id)
+        g = (group or "").strip()
+        if not c or not g:
+            return False
+        lst = c.setdefault("группы", [])
+        if g not in lst:
+            lst.append(g)
+            self.store.save()
+        return True
+
+    def course_group_remove(self, course_id, group):
+        """Закрыть курс группе."""
+        c = self.course(course_id)
+        g = (group or "").strip()
+        if not c or not g:
+            return False
+        lst = c.get("группы") or []
+        if g in lst:
+            lst.remove(g)
+            self.store.save()
+        return True
+
+    def enroll(self, course_id, student_id):
+        """Зачислить студента на курс."""
+        c = self.course(course_id)
+        s = self.student(student_id)
+        if not c or not s:
+            return False
+        lst = c.setdefault("студенты", [])
+        if student_id not in lst:
+            lst.append(student_id)
+            self.store.save()
+        return True
+
+    def unenroll(self, course_id, student_id):
+        """Отчислить студента с курса."""
+        c = self.course(course_id)
+        if not c:
+            return False
+        lst = c.get("студенты") or []
+        if student_id in lst:
+            lst.remove(student_id)
+            self.store.save()
+        return True
 
     def lessons(self, course_id=None):
         ls = self.db.get("занятия", [])
@@ -361,9 +576,10 @@ class Core:
         self.store.save()
         return tid
 
-    def add_student(self, fio, group=""):
+    def add_student(self, fio, group="", brigade=""):
         sid = _nid("s", self.db["студенты"])
-        obj = {"id": sid, "fio": fio, "group": group}
+        obj = {"id": sid, "fio": fio, "group": group,
+               "бригада": (brigade or "").strip()}
         self.db["студенты"].append(obj)
         self.store.save()
         return sid
@@ -409,6 +625,14 @@ class Core:
         self.store.save()
         return True
 
+    def delete_task(self, tid):
+        """Удалить задание и все его сдачи."""
+        self.db["задания"] = [t for t in self.db["задания"] if t.get("id") != tid]
+        for sk in [k for k in self.db["сдачи"] if k.startswith(tid + "__")]:
+            del self.db["сдачи"][sk]
+        self.store.save()
+        return True
+
     # ── ВЁРСТКА ──────────────────────────────────────────────────────
 
     def page(self, title, body, staff=False, extra_head="", course=None, lesson=None):
@@ -425,16 +649,30 @@ class Core:
         if not staff:
             extra_head += self.INACTIVITY_JS
         return (
-            f'<!doctype html>'
-            f'<meta charset="utf-8">'
+            '<!doctype html>'
+            '<html lang="ru">'
+            '<head>'
+            '<meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">'
             f'<title>{_e(title)}</title>'
-            f'<link rel="stylesheet" href="/_static/core.css">'
+            '<link rel="stylesheet" href="/_static/core.css">'
+            '<script>(function(){try{if(localStorage.getItem("wc-theme")'
+            '==="dark"){document.documentElement.classList.add("dark")}}'
+            'catch(e){}})();</script>'
             f'{extra_head}'
+            '</head>'
             f'<body class="{cls}">'
             f'<header class="topbar">{self._topbar(staff)}</header>'
             f'<main id="main"><h1>{_e(title)}</h1>{body}</main>'
-            f'<footer class="footer">works-core</footer>'
-            f'</body>')
+            '<footer class="footer">works-core</footer>'
+            '<script>function _wc_theme(b){var d=document.documentElement.classList;'
+            'd.toggle("dark");var on=d.contains("dark");'
+            'try{localStorage.setItem("wc-theme",on?"dark":"light")}catch(e){}'
+            'if(b)b.textContent=on?"\u2600\ufe0f":"\U0001f319";}'
+            '(function(){var b=document.querySelector(".theme-toggle");'
+            'if(b)b.textContent=document.documentElement.classList.contains("dark")'
+            '?"\u2600\ufe0f":"\U0001f319";})();</script>'
+            '</body></html>')
 
     # ── Состояние модулей (вкл/выкл) ──────────────────────────────
     def _module_states_path(self):
@@ -506,18 +744,25 @@ class Core:
  else if(d>540000&&!document.getElementById('_iaW')){
   var w=document.createElement('div');w.id='_iaW';
   w.style.cssText='position:fixed;bottom:0;left:0;right:0;background:#c0392b;color:#fff;padding:14px 20px;font-size:15px;z-index:999;text-align:center;border-top:3px solid #a03022;cursor:pointer;';
-  w.innerHTML='<b>SESSION WILL EXPIRE</b> due to inactivity. Move mouse to stay.';
+  w.innerHTML='<b>Сессия завершится</b> из-за бездействия. Двигайте мышь, чтобы продолжить.';
   document.body.appendChild(w);}
     },10000);
     </script>'''
     def _topbar(self, staff):
 
+        brand = '<span class="brand">WORKS\u00b7CORE</span>'
+        toggle = ('<button class="theme-toggle" type="button" '
+                  'title="Тёмная / светлая тема" onclick="_wc_theme(this)">'
+                  '🌙</button>')
         if staff:
             return ('<nav><a href="/">🏠 Студенту</a>'
                     ' <a href="/staff">📋 Панель</a>'
+                    ' <a href="/board">📺 Доска</a>'
                     ' <a href="/_modules">🧩 Модули</a>'
-                    ' <a href="/_staff_logout">Выйти</a></nav>')
-        return '<nav><a href="/">🏠 Главная</a> <a href="/_logout">✖ Выйти</a></nav>'
+                    ' <a href="/_staff_logout">Выйти</a></nav>' + toggle)
+        return (brand +
+                '<nav><a href="/">🏠 Главная</a> <a href="/_logout">✖ Выйти</a></nav>'
+                + toggle)
 
     def task_form_html(self, task, values=None):
         """Сгенерировать HTML формы задания."""

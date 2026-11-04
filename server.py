@@ -7,6 +7,7 @@
 """
 import argparse
 import os
+import secrets
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -37,13 +38,9 @@ def main():
     if args.demo and not store.db["курсы"]:
         _create_demo(core)
 
-    # Пароль
-    passwd = args.passwd
-    if not passwd and not args.no_pass:
-        import secrets
-        passwd = secrets.token_hex(4)
-        print(f"Пароль преподавателя: {passwd}")
-        print("(сохраните его — показать второй раз я не смогу)")
+    # Пароль: CLI --pass > сохранённый хеш > генерация нового.
+    # --no-pass полностью отключает вход по паролю.
+    passwd = args.passwd or None
     if args.no_pass:
         passwd = ""
 
@@ -54,7 +51,19 @@ def main():
     # Старт сервера
     static_dir = os.path.join(_HERE, "static")
     server = WorksServer(core, host=args.host, port=args.port,
-                         static_dir=static_dir, passwd=passwd)
+                         static_dir=static_dir, passwd=passwd,
+                         no_pass=args.no_pass)
+
+    if not args.no_pass:
+        if args.passwd:
+            server.set_password(args.passwd)
+        elif server.pw_hash:
+            print("Пароль преподавателя: сохранён ранее (смена — в панели)")
+        else:
+            new_pw = secrets.token_hex(4)
+            server.set_password(new_pw)
+            print(f"Пароль преподавателя: {new_pw}")
+            print("(сохраните его — показать второй раз я не смогу)")
 
     # Информация о запуске
     hostname = socket.gethostname()
@@ -184,7 +193,7 @@ def _create_demo(core):
     # Студенты
     for name in ["Иванов И.И.", "Петров П.П.", "Сидоров С.С.",
                  "Кузнецов А.В.", "Смирнова Е.Д.", "Васильев Д.К."]:
-        core.add_student(name, "П-21")
+        core.enroll(cid, core.add_student(name, "П-21"))
 
     core.store.save()
 

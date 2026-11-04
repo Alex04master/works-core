@@ -1,18 +1,121 @@
 # -*- coding: utf-8 -*-
 """HTTP-сервер ядра: маршрутизация, multipart, сессии, статика."""
-import cgi
+import hashlib
+import hmac
 import http.server
 import json
 import mimetypes
 import os
 import secrets
-import socket
+import time
 import urllib.parse
+from datetime import datetime
+
+from .core import _md, task_deadline
 
 
 _mime = mimetypes.guess_type
 _SENT = "___SENT___"  # маркер: ответ уже отправлен
 SENT = _SENT  # экспорт для модулей
+
+
+class Upload:
+    """Загруженный файл (multipart): оригинальное имя + байты."""
+
+    __slots__ = ("name", "data")
+
+    def __init__(self, name, data):
+        self.name = name or "file"
+        self.data = data
+
+
+DRAFT_JS = """<script>
+(function(){
+  var K='draft_'+location.pathname;
+  if(/[?&]ok=1/.test(location.search)){try{localStorage.removeItem(K)}catch(e){}return}
+  var f=document.querySelector('form.task-form');if(!f)return;
+  try{
+    var d=JSON.parse(localStorage.getItem(K)||'{}');
+    for(var i=0;i<f.elements.length;i++){var el=f.elements[i];
+      if(!el.name||el.type=='file'||el.type=='submit')continue;
+      if(el.type=='radio'||el.type=='checkbox'){
+        var v=d[el.name];
+        el.checked=(v===undefined)?false:(Array.isArray(v)?v.indexOf(el.value)>=0:v===el.value);
+      }else if(d[el.name]!==undefined){el.value=d[el.name];}
+    }
+  }catch(e){}
+  function save(){
+    try{
+      var d={};new FormData(f).forEach(function(v,k){
+        if(k=='task'||typeof v!='string')return;
+        if(d[k]===undefined)d[k]=v;
+        else if(Array.isArray(d[k]))d[k].push(v);
+        else d[k]=[d[k],v];
+      });
+      localStorage.setItem(K,JSON.stringify(d));
+    }catch(e){}
+  }
+  f.addEventListener('input',save);f.addEventListener('change',save);
+})();
+</script>"""
+
+
+def _cd_param(text, param):
+    """Параметр из Content-Disposition: name=... / filename=..."""
+    for tok in text.split(";"):
+        tok = tok.strip()
+        if tok.lower().startswith(param + "="):
+            v = tok[len(param) + 1:].strip()
+            if v.startswith('"') and v.endswith('"') and len(v) >= 2:
+                v = v[1:-1]
+            return v.replace('\\"', '"')
+    return ""
+
+
+def _parse_multipart(body, boundary):
+    """Минимальный парсер multipart/form-data (замена удалённого модуля cgi).
+
+    Возвращает (поля, файлы): поля {имя: str | [str, ...]}, файлы {имя: Upload}.
+    """
+    fields = {}
+    files = {}
+    if not boundary:
+        return fields, files
+    delim = b"--" + boundary
+    for part in body.split(delim):
+        if not part or part.startswith(b"--"):
+            continue
+        p = part
+        if p.startswith(b"\r\n"):
+            p = p[2:]
+        if p.endswith(b"\r\n"):
+            p = p[:-2]
+        if b"\r\n\r\n" not in p:
+            continue
+        head, _, content = p.partition(b"\r\n\r\n")
+        disp = ""
+        for line in head.split(b"\r\n"):
+            text = line.decode("utf-8", "replace")
+            if text.lower().startswith("content-disposition"):
+                disp = text
+        if not disp:
+            continue
+        name = _cd_param(disp, "name")
+        if not name:
+            continue
+        fname = _cd_param(disp, "filename")
+        if fname:
+            files[name] = Upload(fname, content)
+        else:
+            val = content.decode("utf-8", "replace")
+            prev = fields.get(name)
+            if prev is None:
+                fields[name] = val
+            elif isinstance(prev, list):
+                prev.append(val)
+            else:
+                fields[name] = [prev, val]
+    return fields, files
 
 
 class Router:
@@ -81,22 +184,28 @@ class WorksHandler(http.server.BaseHTTPRequestHandler):
     def _handle(self, method):
         try:
             path = urllib.parse.urlparse(self.path).path
+            # Статика и материалы — до роутера: маршрут "/" (префикс,
+            # оканчивающийся на "/") иначе перехватывает ВСЕ пути,
+            # и core.css/файлы не отдаются вовсе.
+            if path.startswith("/_static/") or path.startswith("/materials/"):
+                self._serve_static(path)
+                return
             handler, access, params = self._router.match(method, path)
             if not handler:
                 self._serve_static(path)
                 return
             if access == "staff" and not self._is_staff():
-                self._serve_staff_login()
+                self._send_html(self._serve_staff_login())
                 return
             if access == "student" and not self._student():
                 self._redirect("/_login?next=" + urllib.parse.quote(self.path))
                 return
             try:
                 result = handler(self, params)
-            except Exception as ex:
+            except Exception:
                 import traceback
                 traceback.print_exc()
-                self._send_json(500, {"error": str(ex)})
+                self._send_json(500, {"error": "внутренняя ошибка сервера"})
                 return
             if result is _SENT:
                 return  # ответ уже отправлен (редирект и т.п.)
@@ -110,25 +219,44 @@ class WorksHandler(http.server.BaseHTTPRequestHandler):
                 self._send_response(200, "text/html; charset=utf-8", str(result))
         except ConnectionError:
             pass
-        except Exception as ex:
+        except Exception:
             import traceback
             traceback.print_exc()
             try:
-                self._send_text(500, str(ex))
+                self._send_text(500, "внутренняя ошибка сервера")
             except ConnectionError:
                 pass
 
+    def _sign_sid(self, sid):
+        """Подписать id студента (HMAC) — защита от подделки куки."""
+        mac = hmac.new(self._server_inst.secret, sid.encode("utf-8"),
+                       hashlib.sha256).hexdigest()[:16]
+        return sid + "." + mac
+
     def _student(self):
         c = self._cookie("student")
-        if c and self._core.student(c):
-            return c
+        if not c or "." not in c:
+            return None
+        sid, mac = c.rsplit(".", 1)
+        good = hmac.new(self._server_inst.secret, sid.encode("utf-8"),
+                        hashlib.sha256).hexdigest()[:16]
+        if secrets.compare_digest(mac, good) and self._core.student(sid):
+            return sid
         return None
 
     def _is_staff(self):
         token = self._cookie("staff_token")
-        if token:
-            return self._server_inst.sessions.get(token)
-        return False
+        if not token:
+            return False
+        sess = self._server_inst.sessions.get(token)
+        if not sess:
+            return False
+        now = time.time()
+        if now - sess.get("t", 0) > self._server_inst.session_ttl:
+            self._server_inst.sessions.pop(token, None)
+            return False
+        sess["t"] = now
+        return True
 
     def _cookie(self, name):
         c = self.headers.get("Cookie", "")
@@ -139,14 +267,22 @@ class WorksHandler(http.server.BaseHTTPRequestHandler):
         return ""
 
     def _serve_staff_login(self):
+        """Страница входа преподавателя (используется и как GET-маршрут)."""
+        notice = ""
+        if "err=limit" in self.path:
+            notice = ('<div class="error">Слишком много попыток. '
+                      "Подождите 10 минут.</div>")
+        elif "err=1" in self.path:
+            notice = '<div class="error">Неверный пароль.</div>'
         body = (
             '<form method="post" action="/_staff_login" class="login-form">'
             "<h2>Вход для преподавателя</h2>"
+            + notice +
             '<p><label>Пароль: <input type="password" name="pass" required autofocus></label></p>'
             "<p><button>Войти</button></p>"
             '<p class="hint">Пароль задаётся при запуске: --pass ПАРОЛЬ</p>'
             "</form>")
-        self._send_html(self._core.page("Вход", body))
+        return self._core.page("Вход", body)
 
     def _serve_static(self, path):
         if path.startswith("/_static/"):
@@ -161,36 +297,51 @@ class WorksHandler(http.server.BaseHTTPRequestHandler):
             os.path.normpath(self._server_inst.static_dir),
             os.path.normpath(self._server_inst.core.store.mat)
         ]
-        if not any(local.startswith(b) for b in basedirs):
+        inside = False
+        for b in basedirs:
+            try:
+                if os.path.commonpath([local, b]) == b:
+                    inside = True
+                    break
+            except ValueError:
+                pass
+        if not inside:
             self._send_text(403, "Forbidden")
             return
         if not os.path.isfile(local):
             self._send_text(404, "Not Found")
             return
         mime, _ = _mime(local)
-        self._send_response(200, mime or "application/octet-stream",
-                            open(local, "rb").read(), encode=False)
+        with open(local, "rb") as f:
+            self._send_response(200, mime or "application/octet-stream",
+                                f.read(), encode=False)
 
     def _parse_post(self):
         ctype = self.headers.get("Content-Type", "")
-        length = int(self.headers.get("Content-Length", 0))
+        length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length > 0 else b""
         if "multipart/form-data" in ctype:
-            _, pdict = cgi.parse_header(ctype)
-            pdict["boundary"] = pdict.get("boundary", "").encode()
-            import io
-            fields = cgi.parse_multipart(io.BytesIO(body), pdict)
-            return {k: (v[0] if isinstance(v, list) and len(v) == 1 else v)
-                    for k, v in fields.items()}
-        elif "application/x-www-form-urlencoded" in ctype or "application/json" in ctype:
-            if "application/json" in ctype:
-                return json.loads(body.decode("utf-8"))
-            return dict(urllib.parse.parse_qsl(body.decode("utf-8")))
-        else:
+            boundary = ""
+            for tok in ctype.split(";"):
+                tok = tok.strip()
+                if tok.lower().startswith("boundary="):
+                    boundary = tok[9:].strip().strip('"')
+            fields, files = _parse_multipart(body, boundary.encode("utf-8"))
+            fields.update(files)
+            return fields
+        try:
+            text = body.decode("utf-8")
+        except UnicodeDecodeError:
+            text = ""
+        if "application/json" in ctype:
             try:
-                return dict(urllib.parse.parse_qsl(body.decode("utf-8")))
-            except Exception:
+                return json.loads(text)
+            except ValueError:
                 return {}
+        try:
+            return dict(urllib.parse.parse_qsl(text))
+        except Exception:
+            return {}
 
     def _send_response(self, code, content_type, data, encode=True):
         self.send_response(code)
@@ -215,7 +366,7 @@ class WorksHandler(http.server.BaseHTTPRequestHandler):
                             json.dumps(obj, ensure_ascii=False))
 
     def _redirect(self, url, extra_headers=None):
-        """Перенаправление (200 + meta-refresh).
+        """Перенаправление: 302 + Location (тело — meta-refresh для надёжности).
 
         extra_headers — список (name, value) для дополнительных заголовков
         (например, Set-Cookie). Передаются ПОСЛЕ send_response, но ДО
@@ -226,7 +377,8 @@ class WorksHandler(http.server.BaseHTTPRequestHandler):
             "<meta http-equiv=\"refresh\" content=\"0;url=%s\">"
             "<title>Redirect</title><a href=\"%s\">Continue</a>") % (url, url)
         data = body.encode("utf-8")
-        self.send_response(200)
+        self.send_response(302)
+        self.send_header("Location", url)
         # Дополнительные заголовки (например Set-Cookie) — после send_response
         for name, value in (extra_headers or []):
             self.send_header(name, value)
@@ -236,25 +388,35 @@ class WorksHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _set_cookie(self, name, value, path="/", max_age=None):
+    def _set_cookie(self, name, value, path="/", max_age=None, httponly=False):
         """Создать заголовок Set-Cookie (без отправки — возвращает строку)."""
-        s = "%s=%s; Path=%s" % (name, urllib.parse.quote(value), path)
-        if max_age:
+        s = "%s=%s; Path=%s; SameSite=Lax" % (name, urllib.parse.quote(value), path)
+        if max_age is not None:
             s += "; Max-Age=%d" % max_age
+        if httponly:
+            s += "; HttpOnly"
         return ("Set-Cookie", s)
 
     def log_message(self, format, *args):
         pass
 
 
-class WorksServer(http.server.HTTPServer):
-    """HTTP-сервер ядра со встроенными маршрутами."""
+class WorksServer(http.server.ThreadingHTTPServer):
+    """HTTP-сервер ядра со встроенными маршрутами (потоковый)."""
 
-    def __init__(self, core, host="", port=8080, static_dir="", passwd=""):
+    daemon_threads = True
+
+    def __init__(self, core, host="", port=8080, static_dir="", passwd="",
+                 no_pass=False):
         self.core = core
         self.static_dir = os.path.abspath(static_dir) if static_dir else ""
-        self.passwd = passwd
-        self.sessions = {}
+        self.passwd = passwd or ""
+        self.no_pass = bool(no_pass)
+        self.sessions = {}           # token -> {"t": время активности}
+        self._fails = {}             # ip -> [время неудачных попыток входа]
+        self.session_ttl = 8 * 3600  # срок жизни сессии преподавателя, сек
+        self.secret = self._load_secret()
+        self.pw_hash = None if self.no_pass else self._load_password_hash()
         self._port = port
 
         WorksHandler._server_inst = self
@@ -266,6 +428,61 @@ class WorksServer(http.server.HTTPServer):
             WorksHandler._router.add(method, path, handler, access)
 
         super().__init__((host, port), WorksHandler)
+
+    def _load_secret(self):
+        """Секрет для подписи кук студентов (переживает перезапуск)."""
+        path = os.path.join(self.core.store.root, "_секрет.key")
+        try:
+            with open(path, "rb") as f:
+                s = f.read().strip()
+            if len(s) >= 32:
+                return s
+        except OSError:
+            pass
+        s = secrets.token_hex(32).encode("ascii")
+        with open(path, "wb") as f:
+            f.write(s)
+        return s
+
+    # ── Пароль преподавателя ──────────────────────────────────────────
+    def _password_hash_path(self):
+        return os.path.join(self.core.store.root, "_пароль.hash")
+
+    def _load_password_hash(self):
+        try:
+            with open(self._password_hash_path(), encoding="ascii") as f:
+                s = f.read().strip()
+            if "$" in s and len(s) > 40:
+                return s
+        except OSError:
+            pass
+        return None
+
+    @staticmethod
+    def _hash_pw(plain, salt_hex):
+        return hashlib.pbkdf2_hmac("sha256", plain.encode("utf-8"),
+                                   bytes.fromhex(salt_hex), 60000).hex()
+
+    def check_password(self, candidate):
+        """Проверить пароль: no-pass / PBKDF2-хеш / пароль из CLI."""
+        if self.no_pass:
+            return True
+        if self.pw_hash:
+            salt, stored = self.pw_hash.split("$", 1)
+            return secrets.compare_digest(self._hash_pw(candidate, salt),
+                                          stored)
+        if not self.passwd:
+            return True
+        return secrets.compare_digest(candidate.encode("utf-8"),
+                                      self.passwd.encode("utf-8"))
+
+    def set_password(self, plain):
+        """Сменить пароль: PBKDF2-хеш сохраняется и переживает рестарт."""
+        salt = secrets.token_hex(16)
+        self.pw_hash = salt + "$" + self._hash_pw(plain, salt)
+        self.passwd = plain
+        with open(self._password_hash_path(), "w", encoding="ascii") as f:
+            f.write(self.pw_hash)
 
     def _make_router(self):
         r = Router()
@@ -285,31 +502,52 @@ class WorksServer(http.server.HTTPServer):
             data = handler._parse_post()
             sid = data.get("student", "")
             if handler._core.student(sid):
-                cookie = handler._set_cookie("student", sid, max_age=86400)
-                handler._redirect(data.get("next", "/"), [cookie])
+                nxt = data.get("next", "/")
+                if not nxt.startswith("/") or nxt.startswith("//"):
+                    nxt = "/"
+                cookie = handler._set_cookie("student", handler._sign_sid(sid),
+                                             max_age=86400, httponly=True)
+                handler._redirect(nxt, [cookie])
             else:
                 handler._redirect("/_login?err=1")
             return _SENT
 
+        @r.add("GET", "/_staff_logout")
         def staff_logout(handler, params):
-            cookie = handler._set_cookie("staff_token", "", max_age=0)
+            cookie = handler._set_cookie("staff_token", "", max_age=0,
+                                         httponly=True)
             handler._redirect("/", [cookie])
             return _SENT
 
+        @r.add("GET", "/_staff_login")
+        def staff_login_page(handler, params):
+            return handler._serve_staff_login()
+
         @r.add("POST", "/_staff_login")
         def staff_login(handler, params):
+            ip = handler.client_address[0]
+            now = time.time()
+            fails = self._fails.setdefault(ip, [])
+            fails[:] = [t for t in fails if now - t < 600]
+            if len(fails) >= 5:
+                handler._redirect("/_staff_login?err=limit")
+                return _SENT
             data = handler._parse_post()
-            if not self.passwd or data.get("pass", "") == self.passwd:
+            ok = self.check_password(data.get("pass", ""))
+            if ok:
                 token = secrets.token_hex(16)
-                self.sessions[token] = True
-                cookie = handler._set_cookie("staff_token", token, max_age=28800)
+                self.sessions[token] = {"t": now}
+                self._fails.pop(ip, None)
+                cookie = handler._set_cookie("staff_token", token,
+                                             max_age=self.session_ttl,
+                                             httponly=True)
                 handler._redirect("/staff", [cookie])
             else:
+                fails.append(now)
                 handler._redirect("/_staff_login?err=1")
             return _SENT
 
-        @r.add("GET", "/_modules")
-        @r.add("GET", "/_modules")
+        @r.add("GET", "/_modules", access="staff")
         def modules_page(handler, params):
             if not handler._is_staff():
                 return handler._core.page("Доступ запрещён",
@@ -438,18 +676,25 @@ class WorksServer(http.server.HTTPServer):
                   'Выключение — после перезапуска.</p>') % (
                     rows, len(handler._core.modules))
             return handler._core.page("Модули", body, staff=True, extra_head=dnd_js + dnd_css)
+        @r.add("POST", "/_modules/toggle/", access="staff")
         def toggle_module(handler, params):
             parts = params.get("_parts", [])
             mod_id = parts[0] if parts else ""
             if not mod_id:
-                return handler._send_json(400, {"error": "no module id"})
+                handler._send_json(400, {"error": "no module id"})
+                return _SENT
             enabled = handler._core.toggle_module(mod_id)
-            return handler._send_json(200, {"ok": True, "mod_id": mod_id, "enabled": enabled})
+            handler._send_json(200, {"ok": True, "mod_id": mod_id,
+                                     "enabled": enabled})
+            return _SENT
 
         @r.add("GET", "/")
         def home(handler, params):
             sid = handler._student()
-            courses = handler._core.courses()
+            if not sid:
+                handler._redirect("/_login?next=%2F")
+                return _SENT
+            courses = handler._core.courses(sid)
             if not courses:
                 return handler._core.page("Нет курсов", "<p>Нет доступных курсов.</p>")
             items = "".join(
@@ -471,6 +716,10 @@ class WorksServer(http.server.HTTPServer):
             if not sid:
                 handler._redirect("/_login?next=" + urllib.parse.quote(handler.path))
                 return _SENT
+            if not handler._core.can_access(cid, sid):
+                return handler._core.page(
+                    "Нет доступа",
+                    '<p class="error">Вы не зачислены на этот курс.</p>')
             lessons = handler._core.lessons(cid)
             items = "".join(
                 '<li><a href="/lesson/%s">%s</a></li>' % (l["id"], _e(l.get("title", "")))
@@ -504,6 +753,10 @@ class WorksServer(http.server.HTTPServer):
             if not sid:
                 handler._redirect("/_login?next=" + urllib.parse.quote(handler.path))
                 return _SENT
+            if not handler._core.can_access(lesson.get("course", ""), sid):
+                return handler._core.page(
+                    "Нет доступа",
+                    '<p class="error">Вы не зачислены на этот курс.</p>')
             course = handler._core.course(lesson.get("course", ""))
             tasks = handler._core.tasks(lid)
             items = ""
@@ -551,9 +804,31 @@ class WorksServer(http.server.HTTPServer):
             if not sid:
                 handler._redirect("/_login?next=" + urllib.parse.quote("/task/" + tid))
                 return _SENT
+            _t = handler._core.task(tid)
+            _lesson0 = handler._core.lesson(_t.get("lesson", "")) if _t else None
+            if _lesson0 and not handler._core.can_access(_lesson0.get("course", ""), sid):
+                return handler._core.page(
+                    "Нет доступа",
+                    '<p class="error">Вы не зачислены на этот курс.</p>')
             lesson = handler._core.lesson(handler._core.task(tid).get("lesson", ""))
             course = handler._core.course(lesson.get("course", "")) if lesson else None
             form_html = handler._core.task_form_html(task_data)
+            dl = task_deadline(handler._core.task(tid))
+            dl_html = ""
+            if dl:
+                when = dl.strftime("%d.%m.%Y %H:%M")
+                left = dl - datetime.now()
+                if left.total_seconds() > 0:
+                    left_s = ("осталось %d дн. %d ч." % (left.days, left.seconds // 3600)
+                              if left.days else
+                              "осталось %d ч. %d мин." % (left.seconds // 3600,
+                                                          left.seconds % 3600 // 60))
+                    dl_html = ('<div class="notice">⏰ Срок сдачи: %s — %s</div>'
+                               % (_e(when), left_s))
+                else:
+                    dl_html = ('<div class="notice">⏰ Срок сдачи: %s — истёк, '
+                               'работа будет помечена как просроченная.</div>'
+                               % _e(when))
             sub = handler._core.sub(tid, sid)
             sub_info = ""
             if sub:
@@ -562,7 +837,9 @@ class WorksServer(http.server.HTTPServer):
                          "доработка": "доработка", "отклонено": "отклонено"}
                 status = icons.get(sub.get("status", ""), sub.get("status", ""))
                 sub_info = '<div class="sub-status"><h3>Статус: %s</h3>' % status
-                sub_info += "<p>Версия %d, %s</p>" % (v.get("n", 0), v.get("time", ""))
+                sub_info += "<p>Версия %d, %s%s</p>" % (
+                    v.get("n", 0), v.get("time", ""),
+                    " ⏰ сдано после срока" if v.get("просрочено") else "")
                 if v.get("verdict"):
                     sub_info += "<p>Вердикт: %s</p>" % _e(v["verdict"])
                     if v.get("score"):
@@ -570,15 +847,29 @@ class WorksServer(http.server.HTTPServer):
                     if v.get("comment"):
                         sub_info += "<p>%s</p>" % _e(v["comment"])
                 sub_info += "</div>"
+                if sub.get("бригада"):
+                    sub_info += '<p>👥 Бригада «%s» — участников: %d</p>' % (
+                        _e(sub["бригада"]), len(sub.get("participants", [])))
+            _stu = handler._core.student(sid)
+            _brg = (_stu.get("бригада", "") or "").strip() if _stu else ""
+            br_html = ""
+            if _brg:
+                br_html = (
+                    '<p><label>Сдача: '
+                    '<select name="brigade">'
+                    '<option value="">👤 Лично (свой отчёт)</option>'
+                    '<option value="%s">👥 За бригаду «%s» — отчёт один на всех'
+                    '</option></select></label></p>' % (_e(_brg), _e(_brg)))
             body = ('<p><a href="/lesson/%s">%s</a></p>'
-                    '<div class="task-desc">%s</div>%s'
+                    '<div class="task-desc">%s</div>%s%s'
                     '<form method="post" action="/api/submit"'
                     ' enctype="multipart/form-data" class="task-form">'
-                    '<input type="hidden" name="task" value="%s">%s'
-                    "<p><button>Отправить</button></p></form>") % (
+                    '<input type="hidden" name="task" value="%s">%s%s'
+                    "<p><button>Отправить</button></p></form>" + DRAFT_JS) % (
                 _e(lesson["id"] if lesson else ""),
                 _e(lesson["title"] if lesson else ""),
-                task_data.get("описание", ""), sub_info, tid, form_html)
+                _md(task_data.get("описание", "")),
+                dl_html, sub_info, tid, form_html, br_html)
             return handler._core.page(task_data.get("title", ""), body,
                                       course=course, lesson=lesson)
 
@@ -588,17 +879,22 @@ class WorksServer(http.server.HTTPServer):
             tid = data.get("task", "")
             sid = handler._student()
             if not sid:
-                return handler._send_json(403, {"error": "not authorised"})
+                handler._send_json(403, {"error": "not authorised"})
+                return _SENT
             answers = {}
             files = {}
+            brigade = ""
             for k, v in data.items():
                 if k in ("task", "submit"):
                     continue
-                if isinstance(v, bytes):
-                    files[k] = v
+                if hasattr(v, "data") and hasattr(v, "name"):
+                    files[k] = v          # загруженный файл
+                elif k == "brigade":
+                    brigade = (v or "").strip()
                 else:
                     answers[k] = v
-            sub, err = handler._core.collect(tid, sid, answers, files)
+            sub, err = handler._core.collect(tid, sid, answers, files,
+                                             brigade=brigade)
             if err:
                 handler._redirect("/task/%s?error=%s" % (tid, urllib.parse.quote(err)))
             else:
@@ -606,13 +902,57 @@ class WorksServer(http.server.HTTPServer):
             return _SENT
 
         
-        @r.add("POST", "/_modules/reorder")
+        @r.add("GET", "/_subfile/", access="staff")
+        def sub_file(handler, params):
+            """Скачать файл из сдачи студента (только преподаватель)."""
+            parts = params.get("_parts", [])
+            if len(parts) < 3 or "__" not in parts[0]:
+                handler._send_text(404, "Not Found")
+                return _SENT
+            key, vn, fkey = parts[0], parts[1], parts[2]
+            tid, sid = key.split("__", 1)
+            sub = handler._core.sub(tid, sid)
+            ver = None
+            if sub:
+                for v in sub.get("versions", []):
+                    if str(v.get("n")) == vn:
+                        ver = v
+                        break
+            info = (ver or {}).get("files", {}).get(fkey) if ver else None
+            if not info:
+                handler._send_text(404, "Not Found")
+                return _SENT
+            local = os.path.normpath(os.path.join(handler._core.store.subs,
+                                                  str(info.get("файл", ""))))
+            base = os.path.normpath(handler._core.store.subs)
+            try:
+                inside = os.path.commonpath([local, base]) == base
+            except ValueError:
+                inside = False
+            if not inside or not os.path.isfile(local):
+                handler._send_text(404, "Not Found")
+                return _SENT
+            with open(local, "rb") as f:
+                data = f.read()
+            fname = info.get("имя") or os.path.basename(local)
+            handler.send_response(200)
+            handler.send_header("Content-Type", "application/octet-stream")
+            handler.send_header(
+                "Content-Disposition",
+                "attachment; filename*=UTF-8''" + urllib.parse.quote(str(fname)))
+            handler.send_header("Content-Length", str(len(data)))
+            handler.end_headers()
+            handler.wfile.write(data)
+            return _SENT
+
+        @r.add("POST", "/_modules/reorder", access="staff")
         def reorder_modules(handler, params):
             data = handler._parse_post()
             order = data.get("order", [])
             if order:
                 handler._core.set_module_order(order)
-            return handler._send_json(200, {"ok": True})
+            handler._send_json(200, {"ok": True})
+            return _SENT
 
         return r
 
