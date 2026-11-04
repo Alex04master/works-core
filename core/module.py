@@ -42,6 +42,10 @@ class ModuleContext:
         """Подписаться на событие ядра."""
         self._core.events.on(event, handler, self.id)
 
+    def emit(self, event, **kw):
+        """Собрать результаты подписчиков события (для вставки UI)."""
+        return self._core.events.run(event, **kw)
+
     def get_course(self, cid):
         return self._core._get("курсы", cid)
 

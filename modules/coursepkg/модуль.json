@@ -1,0 +1,9 @@
+{
+  "id": "coursepkg",
+  "name": "Пакет курса (экспорт/импорт)",
+  "version": "1.0.0",
+  "api": 1,
+  "kind": "python",
+  "enabled": true,
+  "настройки": {}
+}
