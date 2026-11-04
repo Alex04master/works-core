@@ -67,7 +67,8 @@ def register(ctx):
             '<p><button>Импортировать</button></p></form></details>'
         ) % course_opts
         body = ('<div class="staff-grid">%s</div>%s%s'
-                '<p class="hint"><a href="/staff/password">🔑 Сменить пароль</a></p>'
+                '<p class="hint"><a href="/staff/password">🔑 Сменить пароль</a>'
+                ' · <a href="/staff/scenarios">🎬 Сценарии</a></p>'
                 ) % (cards, new_form, import_card)
         return _page(ctx, "Панель преподавателя", body)
 
@@ -235,8 +236,31 @@ def register(ctx):
             'placeholder="П-21" required></label></p>'
             '<p><button>Открыть группе</button></p></form></div>'
         ) % (group_rows, groups_status, _e(cid))
+        bmax = ctx.brigade_max(cid)
+        teams = {}
+        for s in ctx.list_students():
+            b = (s.get("бригада") or "").strip()
+            if b:
+                teams.setdefault(b, []).append(s.get("fio", ""))
+        team_rows = "".join(
+            '<li>👥 <b>%s</b> — %d чел.: %s</li>'
+            % (_e(b), len(m), _e(", ".join(m)))
+            for b, m in sorted(teams.items())) or \
+            '<li class="hint">Пока нет бригад.</li>'
+        brigade_card = (
+            '<div class="staff-card"><h2>👷 Бригады</h2>'
+            '<p class="hint">Названия бригад придумывают студенты и вступают '
+            'сами — на странице курса. Максимальный состав назначаете вы.</p>'
+            '<ul>%s</ul>'
+            '<form method="post" action="/staff/brigade_max">'
+            '<input type="hidden" name="course" value="%s">'
+            '<p><label>Максимальный состав бригады: '
+            '<input type="number" name="max" value="%d" min="1" max="20" '
+            'required></label></p>'
+            '<p><button>Сохранить</button></p></form></div>'
+        ) % (team_rows, _e(cid), bmax)
         body = body.replace("</div></div>",
-                            "</div>" + groups_card + enroll_card +
+                            "</div>" + groups_card + brigade_card + enroll_card +
                             import_form + "</div>", 1)
 
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
@@ -559,6 +583,16 @@ def register(ctx):
         score_val = float(score) if score else None
         ctx.set_verdict(tid, sid, verdict, score_val, comment)
         handler._redirect("/staff/sub/%s" % _e(key))
+        return handler._SENT
+
+    # ── Максимальный состав бригад ───────────────────────────────────
+    @ctx.add_route("POST", "/staff/brigade_max", access="staff")
+    def brigade_max(handler, params):
+        data = handler._parse_post()
+        cid = data.get("course", "")
+        if cid:
+            ctx.set_brigade_max(cid, data.get("max", 0))
+        handler._redirect("/staff/course/%s" % _e(cid))
         return handler._SENT
 
     # ── Доступ курса группам ─────────────────────────────────────────

@@ -738,8 +738,113 @@ class WorksServer(http.server.ThreadingHTTPServer):
                         else:
                             mats_html += "<li>%s</li>" % _e(name)
                     mats_html += "</ul>"
-            body = '<ul class="lesson-list">%s</ul><h2>Материалы</h2>%s' % (items, mats_html)
+            # ── Бригады: названия придумывают студенты, лимит задаёт преподаватель
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+            bmsg = ""
+            if (qs.get("brig_err") or [""])[0]:
+                bmsg = '<p class="error">%s</p>' % _e((qs.get("brig_err") or [""])[0])
+            elif (qs.get("brig_ok") or [""])[0]:
+                bmsg = ('<div class="sub-status"><p>%s</p></div>'
+                        % _e((qs.get("brig_ok") or [""])[0]))
+            studs = handler._core.db.get("студенты", [])
+            me = next((s for s in studs if s["id"] == sid), None)
+            my_br = ((me or {}).get("бригада") or "").strip()
+            teams = {}
+            for s in studs:
+                b = (s.get("бригада") or "").strip()
+                if b:
+                    teams.setdefault(b, []).append(s.get("fio", ""))
+            bmax = handler._core.brigade_max(cid)
+            if my_br:
+                mine_html = ('<p>Моя бригада: <span class="team-badge">👥 %s'
+                             '</span></p>' % _e(my_br))
+            else:
+                mine_html = '<p class="hint">Вы пока без бригады.</p>'
+            rows = ""
+            for b in sorted(teams):
+                members = teams[b]
+                if b == my_br:
+                    act = ('<form method="post" action="/brigade" '
+                           'style="display:inline">'
+                           '<input type="hidden" name="course" value="%s">'
+                           '<input type="hidden" name="act" value="leave">'
+                           '<button class="btn-sm btn-secondary">Выйти</button>'
+                           '</form>' % _e(cid))
+                elif len(members) < bmax:
+                    act = ('<form method="post" action="/brigade" '
+                           'style="display:inline">'
+                           '<input type="hidden" name="course" value="%s">'
+                           '<input type="hidden" name="act" value="join">'
+                           '<input type="hidden" name="name" value="%s">'
+                           '<button class="btn-sm">Вступить</button></form>'
+                           % (_e(cid), _e(b)))
+                else:
+                    act = '<span class="reason">мест нет</span>'
+                rows += ('<li>👥 <b>%s</b> — %d/%d %s</li>'
+                         % (_e(b), len(members), bmax, act))
+            bhtml = ('<h2>👷 Бригады</h2>%s%s<ul>%s</ul>'
+                     '<form method="post" action="/brigade" class="task-form" '
+                     'style="padding:14px 18px">'
+                     '<input type="hidden" name="course" value="%s">'
+                     '<input type="hidden" name="act" value="create">'
+                     '<p><label>Название бригады: '
+                     '<input type="text" name="name" maxlength="40" '
+                     'placeholder="например, Искра" required></label></p>'
+                     '<p><button>Создать бригаду</button></p></form>'
+                     '<p class="hint">Состав — до %d чел. Бригада сдаёт '
+                     'один отчёт на всех.</p>'
+                     ) % (bmsg, mine_html,
+                          rows or '<li class="hint">Пока нет ни одной бригады.</li>',
+                          _e(cid), bmax)
+            body = ('<ul class="lesson-list">%s</ul><h2>Материалы</h2>%s%s'
+                    % (items, mats_html, bhtml))
             return handler._core.page(course.get("title", ""), body, course=course)
+
+        @r.add("POST", "/brigade")
+        def brigade_post(handler, params):
+            data = handler._parse_post()
+            sid = handler._student()
+            if not sid:
+                handler._send_json(403, {"error": "not authorised"})
+                return _SENT
+            cid = data.get("course", "")
+            act = data.get("act", "")
+            name = (data.get("name") or "").strip()
+            back = "/course/%s" % _e(cid)
+            if not handler._core.course(cid) or \
+                    not handler._core.can_access(cid, sid):
+                handler._redirect(back + "?brig_err="
+                                  + urllib.parse.quote("Нет доступа к курсу"))
+                return _SENT
+            studs = handler._core.db.get("студенты", [])
+            me = next((s for s in studs if s["id"] == sid), None)
+            my_br = ((me or {}).get("бригада") or "").strip()
+            teams = {}
+            for s in studs:
+                b = (s.get("бригада") or "").strip()
+                if b:
+                    teams.setdefault(b, []).append(s["id"])
+            bmax = handler._core.brigade_max(cid)
+            if act == "leave":
+                if my_br:
+                    handler._core.student_set_brigade(sid, "")
+                    back += "?brig_ok=" + urllib.parse.quote("Вы вышли из бригады")
+            elif act in ("create", "join"):
+                if my_br:
+                    back += "?brig_err=" + urllib.parse.quote(
+                        "Вы уже в бригаде «%s» — сначала выйдите" % my_br)
+                elif not name:
+                    back += "?brig_err=" + urllib.parse.quote(
+                        "Введите название бригады")
+                elif name in teams and len(teams[name]) >= bmax:
+                    back += "?brig_err=" + urllib.parse.quote(
+                        "В бригаде «%s» нет мест (макс. %d)" % (name, bmax))
+                else:
+                    handler._core.student_set_brigade(sid, name)
+                    back += "?brig_ok=" + urllib.parse.quote(
+                        "Вы в бригаде «%s»" % name)
+            handler._redirect(back)
+            return _SENT
 
         @r.add("GET", "/lesson/")
         def lesson_page(handler, params):
@@ -860,6 +965,12 @@ class WorksServer(http.server.ThreadingHTTPServer):
                     '<option value="">👤 Лично (свой отчёт)</option>'
                     '<option value="%s">👥 За бригаду «%s» — отчёт один на всех'
                     '</option></select></label></p>' % (_e(_brg), _e(_brg)))
+            else:
+                _cb = "/course/%s" % course["id"] if course else ""
+                if _cb:
+                    br_html = ('<p class="hint">Сдать одним отчётом на бригаду? '
+                               '<a href="%s">Создайте бригаду или вступите</a> '
+                               'на странице курса.</p>' % _cb)
             body = ('<p><a href="/lesson/%s">%s</a></p>'
                     '<div class="task-desc">%s</div>%s%s'
                     '<form method="post" action="/api/submit"'

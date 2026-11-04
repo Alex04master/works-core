@@ -144,6 +144,22 @@ class ModuleContext:
 
     def course_group_remove(self, cid, group):
         return self._core.course_group_remove(cid, group)
+
+    def brigade_max(self, cid):
+        return self._core.brigade_max(cid)
+
+    def set_brigade_max(self, cid, n):
+        return self._core.set_brigade_max(cid, n)
+
+    def student_set_brigade(self, sid, brigade):
+        return self._core.student_set_brigade(sid, brigade)
+
+    def mat_dir(self, course_id, lesson_id):
+        """Папка файлов занятия (данные/раздатка/<курс>/<занятие>)."""
+        return os.path.join(self._core.store.mat, course_id, lesson_id)
+
+    def save(self):
+        self._core.store.save()
         return False
 
     def update_lesson(self, lid, title, materials=None):

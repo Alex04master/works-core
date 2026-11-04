@@ -504,6 +504,37 @@ class Core:
             self.store.save()
         return True
 
+    def brigade_max(self, course_id):
+        """Максимальный состав бригады (назначает преподаватель)."""
+        c = self.course(course_id) or {}
+        try:
+            n = int(c.get("бригада_макс") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        return n if n > 0 else 3
+
+    def set_brigade_max(self, course_id, n):
+        """Назначить максимальный состав бригады для курса."""
+        c = self.course(course_id)
+        if not c:
+            return False
+        try:
+            n = int(n)
+        except (TypeError, ValueError):
+            return False
+        c["бригада_макс"] = max(1, n)
+        self.store.save()
+        return True
+
+    def student_set_brigade(self, student_id, brigade):
+        """Задать бригаду студента ("" — выйти). Название бригады выбирают студенты."""
+        s = self.student(student_id)
+        if not s:
+            return False
+        s["бригада"] = (brigade or "").strip()
+        self.store.save()
+        return True
+
     def enroll(self, course_id, student_id):
         """Зачислить студента на курс."""
         c = self.course(course_id)

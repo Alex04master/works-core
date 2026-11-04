@@ -126,6 +126,31 @@ try {
   $sp = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/staff'
   Chk 'staff import card present' ($sp -match '/staff/import_group')
 
+  # ---- self-service brigades (students name them, max by teacher) ----
+  curl.exe -s -b "$PWD\_staff.txt" -d 'course=c1' -d 'max=1' 'http://localhost:8099/staff/brigade_max' | Out-Null
+  curl.exe -s -b "$PWD\_ck.txt" -d 'course=c1' -d 'act=create' -d 'name=TEST-TEAM' 'http://localhost:8099/brigade' | Out-Null
+  python -X utf8 _chk_brig3.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   brigade created by student' } else { Write-Output 'FAIL brigade created by student'; $script:fail++ }
+  curl.exe -s -c "$PWD\_ck2.txt" -d 'student=s2' -d 'next=/' 'http://localhost:8099/_login' | Out-Null
+  curl.exe -s -b "$PWD\_ck2.txt" -d 'course=c1' -d 'act=join' -d 'name=TEST-TEAM' 'http://localhost:8099/brigade' | Out-Null
+  python -X utf8 _chk_brig4.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   brigade max enforced' } else { Write-Output 'FAIL brigade max enforced'; $script:fail++ }
+  curl.exe -s -b "$PWD\_staff.txt" -d 'course=c1' -d 'max=5' 'http://localhost:8099/staff/brigade_max' | Out-Null
+  curl.exe -s -b "$PWD\_ck2.txt" -d 'course=c1' -d 'act=join' -d 'name=TEST-TEAM' 'http://localhost:8099/brigade' | Out-Null
+  python -X utf8 _chk_brig5.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   joined after max raised' } else { Write-Output 'FAIL joined after max raised'; $script:fail++ }
+  $cp2 = curl.exe -s -b "$PWD\_ck.txt" 'http://localhost:8099/course/c1'
+  Chk 'brigade box on course page' ($cp2 -match 'value="create"')
+
+  # ---- scenarios module ----
+  $scp = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/staff/scenarios'
+  Chk 'scenarios page lists kits' ($scp -match 'scenarios/import')
+  curl.exe -s -b "$PWD\_staff.txt" -H 'Content-Type: application/json' -d '@_scn.json' 'http://localhost:8099/staff/scenarios/import' | Out-Null
+  python -X utf8 _chk_scn.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   scenario import' } else { Write-Output 'FAIL scenario import'; $script:fail++ }
+  $h1b = curl.exe -s -b "$PWD\_ck.txt" 'http://localhost:8099/course/c1'
+  Chk 'scenario lesson visible' ($h1b -match 'SCN-TEST')
+
 } finally {
   Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 }
