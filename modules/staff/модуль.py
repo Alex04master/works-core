@@ -79,6 +79,7 @@ def register(ctx):
         title = data.get("title", "").strip()
         if title:
             ctx.add_course(title)
+            ctx.audit("создан курс", {"название": title}, handler=handler)
         handler._redirect("/staff")
         return handler._SENT
 
@@ -301,6 +302,8 @@ def register(ctx):
         title = data.get("title", "").strip()
         if title and ctx.get_course(cid):
             ctx.add_lesson(cid, title)
+            ctx.audit("создано занятие", {"курс": cid, "название": title},
+                      handler=handler)
             handler._redirect("/staff/course/%s" % _e(cid))
         else:
             handler._redirect("/staff")
@@ -315,6 +318,9 @@ def register(ctx):
         brigade = data.get("brigade", "").strip()
         if fio:
             ctx.add_student(fio, group, brigade)
+            ctx.audit("добавлен студент",
+                      {"фио": fio, "группа": group, "бригада": brigade},
+                      handler=handler)
         handler._redirect(handler.headers.get("Referer", "/staff"))
         return handler._SENT
 
@@ -427,6 +433,8 @@ def register(ctx):
         if title and ctx.get_lesson(lid):
             ctx.add_task(lid, title, desc,
                          settings={"срок": dl} if dl else None)
+            ctx.audit("создано задание", {"занятие": lid, "название": title},
+                      handler=handler)
             handler._redirect("/staff/lesson/%s" % _e(lid))
         else:
             handler._redirect("/staff")
@@ -587,6 +595,7 @@ def register(ctx):
                         description=desc or task.get("описание", ""),
                         form=form,
                         settings=settings)
+        ctx.audit("изменено задание", {"задание": tid}, handler=handler)
         handler._redirect("/staff/task/%s" % _e(tid))
         return handler._SENT
 
@@ -753,6 +762,9 @@ def register(ctx):
         tid, sid = key.split("__", 1)
         score_val = float(score) if score else None
         ctx.set_verdict(tid, sid, verdict, score_val, comment)
+        ctx.audit("вердикт",
+                  {"задание": tid, "студент": sid, "решение": verdict,
+                   "балл": score_val}, handler=handler)
         handler._redirect("/staff/sub/%s" % _e(key))
         return handler._SENT
 
@@ -786,6 +798,8 @@ def register(ctx):
             else:
                 ctx.task_set_issue(t["id"], None)  # ждёт выдачи
             n += 1
+        ctx.audit("массовая выдача заданий", {"занятие": lid, "заданий": n},
+                  handler=handler)
         ctx.log("массовая выдача %s: заданий %d" % (lid, n))
         handler._redirect("/staff/lesson/%s" % _e(lid))
         return handler._SENT
@@ -800,11 +814,14 @@ def register(ctx):
             return handler._SENT
         if data.get("all"):
             ctx.task_set_issue(tid, [])
+            det = {"задание": tid, "выдано": "всем"}
         else:
             brs = data.get("brigade") or []
             if isinstance(brs, str):
                 brs = [brs]
             ctx.task_set_issue(tid, brs)
+            det = {"задание": tid, "бригады": brs}
+        ctx.audit("выдача задания", det, handler=handler)
         handler._redirect("/staff/task/%s" % _e(tid))
         return handler._SENT
 
@@ -825,6 +842,9 @@ def register(ctx):
             ctx.task_set_issue(tid, issued if issued else None)
         else:
             ctx.task_set_issue(tid, None)  # задание снова ждёт выдачи
+        ctx.audit("снята выдача задания",
+                  {"задание": tid, "бригада": brig or "полностью"},
+                  handler=handler)
         handler._redirect(back)
         return handler._SENT
 
@@ -835,6 +855,9 @@ def register(ctx):
         sid = data.get("student", "")
         if ctx.get_student(sid):
             ctx.student_set_brigade(sid, data.get("brigade", ""))
+            ctx.audit("изменена бригада студента",
+                      {"студент": sid, "бригада": data.get("brigade", "")},
+                      handler=handler)
         handler._redirect("/staff/course/%s" % _e(data.get("course", "")))
         return handler._SENT
 
@@ -842,6 +865,9 @@ def register(ctx):
     def brigade_rename(handler, params):
         data = handler._parse_post()
         ctx.brigade_rename(data.get("old", ""), data.get("new", ""))
+        ctx.audit("бригада переименована",
+                  {"было": data.get("old", ""), "стало": data.get("new", "")},
+                  handler=handler)
         handler._redirect("/staff/course/%s" % _e(data.get("course", "")))
         return handler._SENT
 
@@ -849,6 +875,8 @@ def register(ctx):
     def brigade_delete(handler, params):
         data = handler._parse_post()
         ctx.brigade_delete(data.get("name", ""))
+        ctx.audit("бригада распущена",
+                  {"бригада": data.get("name", "")}, handler=handler)
         handler._redirect("/staff/course/%s" % _e(data.get("course", "")))
         return handler._SENT
 
@@ -859,6 +887,9 @@ def register(ctx):
         cid = data.get("course", "")
         if cid:
             ctx.set_brigade_max(cid, data.get("max", 0))
+            ctx.audit("изменён лимит состава бригад",
+                      {"курс": cid, "лимит": data.get("max", "")},
+                      handler=handler)
         handler._redirect("/staff/course/%s" % _e(cid))
         return handler._SENT
 
@@ -874,6 +905,10 @@ def register(ctx):
                 ctx.course_group_remove(cid, group)
             else:
                 ctx.course_group_add(cid, group)
+            ctx.audit("доступ курса группе",
+                      {"курс": cid, "группа": group,
+                       "действие": "закрыт" if act == "off" else "открыт"},
+                      handler=handler)
         handler._redirect("/staff/course/%s" % _e(cid))
         return handler._SENT
 
@@ -929,6 +964,7 @@ def register(ctx):
             handler._redirect("/staff/password?err=match")
             return handler._SENT
         srv.set_password(new)
+        ctx.audit("изменён пароль преподавателя", handler=handler)
         handler._redirect("/staff/password?ok=1")
         return handler._SENT
 
@@ -978,6 +1014,9 @@ def register(ctx):
             ctx.add_student(fio, grp, brig)
             existing.add((fio, grp))
             added += 1
+        ctx.audit("импорт группы",
+                  {"курс": cid, "добавлено": added, "пропущено": skipped},
+                  handler=handler)
         handler._redirect("/staff/course/%s?imp=%d/%d" % (_e(cid), added, skipped))
         return handler._SENT
 
@@ -992,6 +1031,9 @@ def register(ctx):
                 ctx.unenroll(cid, sid)
             else:
                 ctx.enroll(cid, sid)
+            ctx.audit("отчисление" if data.get("act") == "off"
+                      else "зачисление",
+                      {"курс": cid, "студент": sid}, handler=handler)
         handler._redirect("/staff/course/%s" % _e(cid))
         return handler._SENT
 
@@ -1002,6 +1044,8 @@ def register(ctx):
         if ctx.get_course(cid):
             for s in ctx.list_students():
                 ctx.enroll(cid, s["id"])
+            ctx.audit("зачислены все студенты", {"курс": cid},
+                      handler=handler)
         handler._redirect("/staff/course/%s" % _e(cid))
         return handler._SENT
 
@@ -1011,6 +1055,7 @@ def register(ctx):
         parts = params.get("_parts", [])
         cid = parts[0] if parts else ""
         ctx.delete_course(cid)
+        ctx.audit("удалён курс", {"курс": cid}, handler=handler)
         handler._redirect("/staff")
         return handler._SENT
 
@@ -1021,6 +1066,7 @@ def register(ctx):
         lesson = ctx.get_lesson(lid)
         cid = lesson.get("course", "") if lesson else ""
         ctx.delete_lesson(lid)
+        ctx.audit("удалено занятие", {"занятие": lid}, handler=handler)
         handler._redirect("/staff/course/%s" % _e(cid) if cid else "/staff")
         return handler._SENT
 
@@ -1031,6 +1077,7 @@ def register(ctx):
         task = ctx.get_task(tid)
         lid = task.get("lesson", "") if task else ""
         ctx.delete_task(tid)
+        ctx.audit("удалено задание", {"задание": tid}, handler=handler)
         handler._redirect("/staff/lesson/%s" % _e(lid))
         return handler._SENT
 
@@ -1039,6 +1086,7 @@ def register(ctx):
         parts = params.get("_parts", [])
         sid = parts[0] if parts else ""
         ctx.delete_student(sid)
+        ctx.audit("удалён студент", {"студент": sid}, handler=handler)
         ref = handler.headers.get("Referer", "/staff")
         handler._redirect(ref)
         return handler._SENT

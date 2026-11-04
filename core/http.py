@@ -520,6 +520,8 @@ class WorksServer(http.server.ThreadingHTTPServer):
                     nxt = "/"
                 cookie = handler._set_cookie("student", handler._sign_sid(sid),
                                              max_age=86400, httponly=True)
+                handler._core.audit("студент:%s" % sid, "вход студента",
+                                    ip=handler.client_address[0])
                 handler._redirect(nxt, [cookie])
             else:
                 handler._redirect("/_login?err=1")
@@ -543,6 +545,10 @@ class WorksServer(http.server.ThreadingHTTPServer):
             fails = self._fails.setdefault(ip, [])
             fails[:] = [t for t in fails if now - t < 600]
             if len(fails) >= 5:
+                _c = getattr(self, "core", None) or getattr(self, "_core", None)
+                if _c:
+                    _c.audit("неизвестный", "вход преподавателя заблокирован "
+                             "(лимит попыток)", ip=ip)
                 handler._redirect("/_staff_login?err=limit")
                 return _SENT
             data = handler._parse_post()
@@ -554,9 +560,16 @@ class WorksServer(http.server.ThreadingHTTPServer):
                 cookie = handler._set_cookie("staff_token", token,
                                              max_age=self.session_ttl,
                                              httponly=True)
+                _c = getattr(self, "core", None) or getattr(self, "_core", None)
+                if _c:
+                    _c.audit("преподаватель", "вход в панель", ip=ip)
                 handler._redirect("/staff", [cookie])
             else:
                 fails.append(now)
+                _c = getattr(self, "core", None) or getattr(self, "_core", None)
+                if _c:
+                    _c.audit("неизвестный",
+                             "неудачная попытка входа преподавателя", ip=ip)
                 handler._redirect("/_staff_login?err=1")
             return _SENT
 
@@ -1068,6 +1081,12 @@ class WorksServer(http.server.ThreadingHTTPServer):
             if err:
                 handler._redirect("/task/%s?error=%s" % (tid, urllib.parse.quote(err)))
             else:
+                handler._core.audit(
+                    "студент:%s" % sid, "сдача задания",
+                    {"задание": tid,
+                     "версия": ((sub or {}).get("versions") or [{}])[-1].get("n"),
+                     "бригада": brigade or None},
+                    ip=handler.client_address[0])
                 handler._redirect("/task/%s?ok=1" % tid)
             return _SENT
 

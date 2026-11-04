@@ -166,6 +166,28 @@ class ModuleContext:
     def brigade_delete(self, name):
         return self._core.brigade_delete(name)
 
+    def audit(self, action, details=None, who="преподаватель", handler=None):
+        """Запись в журнал действий (файл данные/лог/…)."""
+        ip = ""
+        if handler is not None:
+            try:
+                ip = handler.client_address[0]
+            except Exception:
+                ip = ""
+        try:
+            self._core.audit(who, action, details, ip)
+        except Exception:
+            pass
+
+    def audit_read(self, month=None):
+        return self._core.audit_read(month)
+
+    def audit_months(self):
+        return self._core.audit_months()
+
+    def audit_cleanup(self, keep_months=0):
+        return self._core.audit_cleanup(keep_months)
+
     def mat_dir(self, course_id, lesson_id):
         """Папка файлов занятия (данные/раздатка/<курс>/<занятие>)."""
         return os.path.join(self._core.store.mat, course_id, lesson_id)

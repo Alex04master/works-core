@@ -272,6 +272,16 @@ try {
   Chk 'full revoke works' ($rv3 -notmatch 'task-form')
   curl.exe -s -b "$PWD\_staff.txt" -d "task=$scnTid" -d 'all=on' 'http://localhost:8099/staff/task_issue' | Out-Null
 
+  # ---- audit log ----
+  curl.exe -s -b "$PWD\_staff.txt" -d 'key=t1__s1' -d 'verdict=Accepted' -d 'score=90' -d 'comment=ok' 'http://localhost:8099/staff/verdict' | Out-Null
+  curl.exe -s -b "$PWD\_staff.txt" -d 'student=s3' -d 'brigade=EDIT-3' -d 'course=c1' 'http://localhost:8099/staff/student_brigade' | Out-Null
+  python -X utf8 tests\_chk_log.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   audit log entries' } else { Write-Output 'FAIL audit log entries'; $script:fail++ }
+  $lg = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/staff/log'
+  Chk 'audit page renders' ($lg -match '/staff/log/export')
+  curl.exe -s -o "$PWD\_log.csv" -b "$PWD\_staff.txt" 'http://localhost:8099/staff/log/export'
+  python -X utf8 tests\_chk_logcsv.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   audit csv export' } else { Write-Output 'FAIL audit csv export'; $script:fail++ }
 } finally {
   Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 }

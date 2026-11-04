@@ -153,6 +153,11 @@ try:
     chk("repair: loops field added",
         any(f.get("ключ") == "loops" for f in t2r["форма"]))
 
+    lf = glob.glob("_scntest/лог/*.jsonl")
+    chk("audit log written", bool(lf))
+    txt = "".join(io.open(f, encoding="utf-8").read() for f in lf)
+    chk("audit has import entry", "импортирован сценарий" in txt)
+
     # массовая выдача + скрытие занятий
     lmass = curl("-b", "_e2e_staff.txt",
                  "http://localhost:8093/staff/lesson/%s" % lid)

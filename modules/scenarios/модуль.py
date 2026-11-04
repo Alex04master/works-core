@@ -267,6 +267,9 @@ function _imp(f){
         ctx.save()
         ctx.kv_save("scenarios", imported)
         ctx.log("починен импорт %s/%s: заданий %d" % (cid, kit, n))
+        ctx.audit("обновлён импорт сценария",
+                  {"комплект": kit, "курс": cid, "заданий": n},
+                  handler=handler)
         handler._send_text(200, "ok:%d" % n)
         return handler._SENT
 
@@ -353,6 +356,9 @@ function _imp(f){
         ctx.kv_save("scenarios", imported)
         ctx.log("сценарий %s -> курс %s: занятие %s, заданий %d"
                 % (kit, cid, lid, n_tasks))
+        ctx.audit("импортирован сценарий",
+                  {"комплект": kit, "курс": cid, "заданий": n_tasks},
+                  handler=handler)
         handler._send_text(200, "ok")
         return handler._SENT
 

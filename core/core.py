@@ -5,10 +5,14 @@
 """
 import json
 import os
+import threading
 import re
 from datetime import datetime
 
 from .store import Store
+
+
+_audit_lock = threading.Lock()
 
 
 def _now():
@@ -622,6 +626,82 @@ class Core:
                 n += 1
         if n:
             self.store.save()
+        return n
+
+    # ── ЖУРНАЛ ДЕЙСТВИЙ (пишет core, показывает модуль audit) ────────
+    def audit_dir(self):
+        """Папка журнала: данные/лог/."""
+        p = os.path.join(self.store.root, "лог")
+        os.makedirs(p, exist_ok=True)
+        return p
+
+    def audit(self, who, action, details=None, ip=""):
+        """Записать событие в журнал. Никогда не ломает запрос."""
+        try:
+            month = datetime.now().strftime("%Y-%m")
+            line = json.dumps(
+                {"время": _now(), "кто": who, "ip": ip,
+                 "действие": action, "детали": details or {}},
+                ensure_ascii=False)
+            with _audit_lock:
+                with open(os.path.join(self.audit_dir(),
+                                       "действия-%s.jsonl" % month),
+                          "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+        except Exception:
+            pass
+
+    def audit_read(self, month=None):
+        """События месяца (по умолчанию — текущего), новые сверху."""
+        try:
+            month = month or datetime.now().strftime("%Y-%m")
+            path = os.path.join(self.audit_dir(),
+                                "действия-%s.jsonl" % month)
+            if not os.path.isfile(path):
+                return []
+            out = []
+            with open(path, encoding="utf-8") as f:
+                for ln in f:
+                    try:
+                        out.append(json.loads(ln))
+                    except ValueError:
+                        continue
+            out.reverse()
+            return out
+        except Exception:
+            return []
+
+    def audit_months(self):
+        """Месяцы с файлами журнала (новые сверху)."""
+        try:
+            out = []
+            for fn in os.listdir(self.audit_dir()):
+                if fn.startswith("действия-") and fn.endswith(".jsonl"):
+                    out.append(fn[len("действия-"):-len(".jsonl")])
+            return sorted(out, reverse=True)
+        except Exception:
+            return []
+
+    def audit_cleanup(self, keep_months=0):
+        """Удалить месяцы старше keep_months (0 — не чистить)."""
+        if not keep_months or keep_months < 0:
+            return 0
+        y, m = datetime.now().year, datetime.now().month
+        for _ in range(keep_months):
+            m -= 1
+            if m == 0:
+                m = 12
+                y -= 1
+        cutoff = "%04d-%02d" % (y, m)
+        n = 0
+        for mm in self.audit_months():
+            if mm < cutoff:
+                try:
+                    os.remove(os.path.join(self.audit_dir(),
+                                           "действия-%s.jsonl" % mm))
+                    n += 1
+                except OSError:
+                    pass
         return n
 
     def task_set_issue(self, task_id, brigades):
