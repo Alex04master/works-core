@@ -384,6 +384,15 @@ try:
     chk("revoke hides task again", "task-form" not in tp4)
     curl("-b", "_e2e_staff.txt", "-d", "task=%s" % tid, "-d", "all=on",
          "http://localhost:8093/staff/task_issue")
+
+    # режим отладки (модуль debug)
+    dbg = curl("-b", "_e2e_staff.txt", "http://localhost:8093/debug")
+    chk("debug: registry keys listed",
+        "debug/view" in dbg and "debug/raw" in dbg)
+    dbv = curl("-b", "_e2e_staff.txt",
+               "http://localhost:8093/debug/view/"
+               + urllib.parse.quote("задания"))
+    chk("debug: tasks viewable", ("id=%s" % tid) in dbv)
 finally:
     proc.terminate()
     try:

@@ -386,6 +386,12 @@ try {
   curl.exe -s -b "$PWD\_staff.txt" -d "task=$scnTid" -d 'all=on' 'http://localhost:8099/staff/task_issue' | Out-Null
   $mp3 = curl.exe -s -b "$PWD\_ck.txt" 'http://localhost:8099/my'
   Chk 'my tasks shows restored' ($mp3 -match "/task/$scnTid")
+
+  # ---- debug mode (module) ----
+  $dbg = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/debug'
+  Chk 'debug page renders' ($dbg -match 'debug/view')
+  python -X utf8 tests\_chk_debug.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   debug mode' } else { Write-Output 'FAIL debug'; $script:fail++ }
 } finally {
   Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 }
