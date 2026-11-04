@@ -539,12 +539,16 @@ class Core:
         return True
 
     def task_set_issue(self, task_id, brigades):
-        """Выдать задание бригадам. Пустой список — задание видно всем."""
+        """Выдача задания. brigades=None — снять выдачу (сценарное ждёт,
+        студенты не видят); [] — выдано всем; [имена] — перечисленным бригадам."""
         t = self._get("задания", task_id)
         if not t:
             return False
-        t["выдано"] = sorted({(b or "").strip() for b in (brigades or [])
-                              if (b or "").strip()})
+        if brigades is None:
+            t.pop("выдано", None)
+        else:
+            t["выдано"] = sorted({(b or "").strip() for b in brigades
+                                  if (b or "").strip()})
         self.store.save()
         return True
 

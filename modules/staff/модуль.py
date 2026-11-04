@@ -307,6 +307,51 @@ def register(ctx):
         tasks = [t for t in ctx.list_tasks() if t.get("lesson") == lid]
         dc = "return confirm('Удалить задание?')"
 
+        # ── Массовая выдача: задания × бригады ──
+        brigades = sorted({(s.get("бригада") or "").strip()
+                           for s in ctx.list_students()
+                           if (s.get("бригада") or "").strip()})
+        issue_head = ('<tr><th>Задание</th>'
+                      + "".join('<th title="состав см. в студентах">👥 %s</th>'
+                                % _e(b) for b in brigades)
+                      + '<th>Всем</th></tr>')
+        issue_rows = ""
+        for t in tasks:
+            issued = set(t.get("выдано")) if isinstance(t.get("выдано"),
+                                                        list) else set()
+            cells = "".join(
+                '<td style="text-align:center">'
+                '<input type="checkbox" name="iss" value="%s|%s"%s></td>'
+                % (_e(t["id"]), _e(b), " checked" if b in issued else "")
+                for b in brigades)
+            if not brigades:
+                cells = ('<td colspan="1" class="reason">Бригад пока нет — '
+                         'студенты регистрируют их на странице курса</td>')
+            allc = ('<td style="text-align:center">'
+                    '<input type="checkbox" name="alltask" value="%s"%s></td>'
+                    % (_e(t["id"]),
+                       " checked" if isinstance(t.get("выдано"), list)
+                       and not t.get("выдано") else ""))
+            wait_mark = ("⏳ " if t.get("выдано") is None
+                         and (t.get("настройки") or {}).get("план") else "")
+            issue_rows += ('<tr><td>%s<a href="/staff/task/%s">%s</a></td>%s%s</tr>'
+                           % (wait_mark, _e(t["id"]), _e(t.get("title", "")),
+                              cells, allc))
+        issue_card = ""
+        if tasks:
+            issue_card = (
+                '<form method="post" action="/staff/issue_mass" class="staff-card">'
+                '<h2>📤 Массовая выдача бригадам</h2>'
+                '<p class="hint">Отметьте, какие задания какой бригаде выданы. '
+                '«Всем» — задание видно всем студентам курса. Ничего не '
+                'отмечено — сценарное задание ждёт выдачи (студенты его '
+                'не видят). Состав бригад — студенты регистрируют их на '
+                'странице курса.</p>'
+                '<input type="hidden" name="lesson" value="%s">'
+                '<table class="staff-table">%s%s</table>'
+                '<p><button>Сохранить выдачу</button></p></form>'
+            ) % (_e(lid), issue_head, issue_rows)
+
         rows = ""
         for t in tasks:
             subs = ctx.list_submissions(task_id=t["id"])
@@ -323,6 +368,7 @@ def register(ctx):
 
         body = (
             '<p><a href="/staff/course/%s">%s</a></p>'
+            '%s'
             '<table class="staff-table"><tr><th>Задание</th><th>Сдано</th>'
             '<th>Принято</th><th></th></tr>%s</table>'
             '<details><summary>Создать задание</summary>'
@@ -337,7 +383,7 @@ def register(ctx):
             '<p><button>Создать</button></p></form></details>') % (
                 _e(lesson.get("course", "")),
                 _e(course["title"] if course else ""),
-                rows, _e(lid))
+                issue_card, rows, _e(lid))
         return _page(ctx, lesson["title"], body)
 
     # ── Создать задание ──────────────────────────────────────────────
@@ -640,6 +686,40 @@ def register(ctx):
         score_val = float(score) if score else None
         ctx.set_verdict(tid, sid, verdict, score_val, comment)
         handler._redirect("/staff/sub/%s" % _e(key))
+        return handler._SENT
+
+    # ── Массовая выдача заданий бригадам ─────────────────────────────
+    @ctx.add_route("POST", "/staff/issue_mass", access="staff")
+    def issue_mass(handler, params):
+        data = handler._parse_post()
+        lid = data.get("lesson", "")
+        if not ctx.get_lesson(lid):
+            handler._redirect("/staff")
+            return handler._SENT
+        alltasks = data.get("alltask") or []
+        if isinstance(alltasks, str):
+            alltasks = [alltasks]
+        pairs = data.get("iss") or []
+        if isinstance(pairs, str):
+            pairs = [pairs]
+        by_task = {}
+        for p in pairs:
+            if "|" in str(p):
+                t, b = str(p).split("|", 1)
+                by_task.setdefault(t, []).append(b)
+        n = 0
+        for t in ctx.list_tasks():
+            if t.get("lesson") != lid:
+                continue
+            if t["id"] in alltasks:
+                ctx.task_set_issue(t["id"], [])
+            elif t["id"] in by_task:
+                ctx.task_set_issue(t["id"], by_task[t["id"]])
+            else:
+                ctx.task_set_issue(t["id"], None)  # ждёт выдачи
+            n += 1
+        ctx.log("массовая выдача %s: заданий %d" % (lid, n))
+        handler._redirect("/staff/lesson/%s" % _e(lid))
         return handler._SENT
 
     # ── Выдача задания бригадам ──────────────────────────────────────

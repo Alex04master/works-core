@@ -340,10 +340,21 @@ class WorksHandler(http.server.BaseHTTPRequestHandler):
                 return json.loads(text)
             except ValueError:
                 return {}
+        # повторяющиеся поля (чекбоксы бригад) -> списки, пустые значения
+        # сохраняются
+        fields = {}
         try:
-            return dict(urllib.parse.parse_qsl(text))
+            for k, v in urllib.parse.parse_qsl(text, keep_blank_values=True):
+                prev = fields.get(k)
+                if prev is None:
+                    fields[k] = v
+                elif isinstance(prev, list):
+                    prev.append(v)
+                else:
+                    fields[k] = [prev, v]
         except Exception:
-            return {}
+            pass
+        return fields
 
     def _send_response(self, code, content_type, data, encode=True):
         self.send_response(code)
@@ -723,6 +734,13 @@ class WorksServer(http.server.ThreadingHTTPServer):
                     "Нет доступа",
                     '<p class="error">Вы не зачислены на этот курс.</p>')
             lessons = handler._core.lessons(cid)
+            # занятия, где студенту не доступно ни одно задание, скрыты
+            _stu_l = handler._core.student(sid)
+            _brg_l = (_stu_l.get("бригада", "") or "").strip() if _stu_l else ""
+            lessons = [l for l in lessons
+                       if not handler._core.tasks(l["id"]) or any(
+                           handler._core.task_for_brigade(t, _brg_l)
+                           for t in handler._core.tasks(l["id"]))]
             items = "".join(
                 '<li><a href="/lesson/%s">%s</a></li>' % (l["id"], _e(l.get("title", "")))
                 for l in lessons)
@@ -856,6 +874,12 @@ class WorksServer(http.server.ThreadingHTTPServer):
             tasks = handler._core.tasks(lid)
             _stu0 = handler._core.student(sid)
             _brg0 = (_stu0.get("бригада", "") or "").strip() if _stu0 else ""
+            if tasks and not any(handler._core.task_for_brigade(t, _brg0)
+                                 for t in tasks):
+                return handler._core.page(
+                    "Нет доступных заданий",
+                    '<p class="error">Задания этого занятия ещё не выданы '
+                    'вашей бригаде.</p>')
             items = ""
             for t in tasks:
                 if not handler._core.task_for_brigade(t, _brg0):

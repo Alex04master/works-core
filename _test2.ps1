@@ -149,7 +149,7 @@ try {
   python -X utf8 _chk_scn.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   scenario import' } else { Write-Output 'FAIL scenario import'; $script:fail++ }
   $h1b = curl.exe -s -b "$PWD\_ck.txt" 'http://localhost:8099/course/c1'
-  Chk 'scenario lesson visible' ($h1b -match 'SCN-TEST')
+  Chk 'waiting lesson hidden on course page' ($h1b -notmatch 'SCN-TEST')
   $h1b | Out-File -Encoding utf8 "$PWD\_tmp_page.html"
   python -X utf8 _chk_nomat.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   materials hidden from students' } else { Write-Output 'FAIL materials hidden from students'; $script:fail++ }
@@ -201,6 +201,25 @@ try {
   curl.exe -s -b "$PWD\_staff.txt" -d "task=$scnTid" -d 'all=on' 'http://localhost:8099/staff/task_issue' | Out-Null
   $t9b = curl.exe -s -b "$PWD\_ck9.txt" "http://localhost:8099/task/$scnTid"
   Chk 'issue-all restores visibility' ($t9b -match 'task-form')
+
+  # ---- mass issue matrix + hidden lessons ----
+  $lm = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/lesson/$scnLid"
+  Chk 'mass issue matrix on lesson page' ($lm -match 'issue_mass')
+  curl.exe -s -b "$PWD\_staff.txt" -d "lesson=$scnLid" -d "iss=$scnTid|BR-1" 'http://localhost:8099/staff/issue_mass' | Out-Null
+  $m9 = curl.exe -s -b "$PWD\_ck9.txt" "http://localhost:8099/task/$scnTid"
+  Chk 'mass issue: BR-1 sees task' ($m9 -match 'task-form')
+  $m1 = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
+  Chk 'mass issue: TEST-TEAM blocked' ($m1 -notmatch 'task-form')
+  $cl1 = curl.exe -s -b "$PWD\_ck.txt" 'http://localhost:8099/course/c1'
+  Chk 'locked lesson hidden on course page' ($cl1 -notmatch 'SMOKE-KIT')
+  $cl9 = curl.exe -s -b "$PWD\_ck9.txt" 'http://localhost:8099/course/c1'
+  Chk 'granted lesson visible for BR-1' ($cl9 -match 'SMOKE-KIT')
+  curl.exe -s -b "$PWD\_staff.txt" -d "lesson=$scnLid" -d "iss=$scnTid|BR-1" -d "iss=$scnTid|TEST-TEAM" 'http://localhost:8099/staff/issue_mass' | Out-Null
+  $m1b = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
+  Chk 'multi-brigade issue works' ($m1b -match 'task-form')
+  curl.exe -s -b "$PWD\_staff.txt" -d "lesson=$scnLid" -d "alltask=$scnTid" 'http://localhost:8099/staff/issue_mass' | Out-Null
+  $m0 = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
+  Chk 'mass issue-all restores' ($m0 -match 'task-form')
   python -X utf8 _mk_kit.py remove | Out-Null
 
 } finally {

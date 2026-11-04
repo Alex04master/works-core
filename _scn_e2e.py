@@ -144,6 +144,23 @@ try:
     chk("repair: plan binding intact",
         t2r.get("настройки", {}).get("план") == "СЦ-01")
 
+    # массовая выдача + скрытие занятий
+    lmass = curl("-b", "_e2e_staff.txt",
+                 "http://localhost:8093/staff/lesson/%s" % lid)
+    chk("mass issue matrix on lesson page", "issue_mass" in lmass)
+    curl("-b", "_e2e_staff.txt", "-d", "lesson=%s" % lid,
+         "-d", "iss=%s|Iskra" % tid, "http://localhost:8093/staff/issue_mass")
+    e1 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
+    chk("mass: unassigned student blocked", "task-form" not in e1)
+    cpage = curl("-b", "_e2e_s1.txt", "http://localhost:8093/course/c1")
+    chk("locked lesson hidden on course page", "больнице" not in cpage)
+    lp3 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/lesson/%s" % lid)
+    chk("lesson page gate for unassigned", "не выданы" in lp3)
+    curl("-b", "_e2e_staff.txt", "-d", "lesson=%s" % lid,
+         "-d", "alltask=%s" % tid, "http://localhost:8093/staff/issue_mass")
+    e2 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
+    chk("mass issue-all restores", "task-form" in e2)
+
     # выдача бригадам: сценарий видят только назначенные бригады
     curl("-b", "_e2e_staff.txt", "-d", "task=%s" % tid,
          "-d", "brigade=Iskra", "http://localhost:8093/staff/task_issue")
