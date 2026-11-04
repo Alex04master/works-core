@@ -363,6 +363,10 @@ html.dark .dnd-x { background: #334155; color: #e2e8f0; }
 html.dark .crit-box { border-color: #334155; background: #1e293b; }
 html.dark .crit-row:hover { background: #312e81; }
 html.dark .mx-off { color: #475569; }
+/* ── «Мои задания» (/my) ── */
+.my-tbl td:first-child { text-align: left; white-space: normal; }
+.my-tbl td:last-child { text-align: right; }
+
 /* ── Страница «Моя сдача» ── */
 .mysub-empty { text-align: center; padding: 28px 16px; }
 .mysub-head { border-left: 4px solid #667eea; }

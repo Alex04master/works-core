@@ -207,6 +207,23 @@ try:
     sq2 = curl("-b", "_e2e_staff.txt", "http://localhost:8093/staff")
     chk("queue: cleared after verdict",
         "/staff/sub/%s__s1" % tid not in sq2)
+
+    # все работы архивом (модуль workszip)
+    tsp = curl("-b", "_e2e_staff.txt",
+               "http://localhost:8093/staff/task/%s" % tid)
+    chk("task page: works + tpl buttons",
+        "/staff/works/" in tsp and "/staff/tpl/save" in tsp)
+    curl("-o", "_e2e_works.zip", "-b", "_e2e_staff.txt",
+         "http://localhost:8093/staff/works/%s" % tid)
+    wz = zipfile.ZipFile("_e2e_works.zip")
+    wnames = wz.namelist()
+    chk("works zip: report + firmware files",
+        any(n.endswith("/отчёт.txt") for n in wnames)
+        and any("firmware" in n for n in wnames))
+    wt = "".join(wz.read(n).decode("utf-8-sig") for n in wnames
+                 if n.endswith("/отчёт.txt"))
+    chk("works zip: verdict + plan in report",
+        "ВЕРДИКТ: Принято" in wt and "Интерактивный план" in wt)
     mf = curl("-i", "-b", "_e2e_s1.txt",
               "http://localhost:8093/mysubfile/%s__s1/v1/firmware" % tid)
     chk("my sub file download", mf.startswith("HTTP/1.0 200"))
@@ -270,6 +287,31 @@ try:
     auto = glob.glob(os.path.join("_scntest", "бэкап", "*.zip"))
     chk("backup auto copy at start", 1 <= len(auto) <= 3)
 
+    # шаблоны заданий (модуль tasktpl)
+    curl("-b", "_e2e_staff.txt", "-d", "task=%s" % tid,
+         "http://localhost:8093/staff/tpl/save")
+    tplp = curl("-b", "_e2e_staff.txt", "http://localhost:8093/staff/tpl")
+    chk("template saved", "tpl/del" in tplp)
+    t0src = [t for t in db["задания"] if t["id"] == tid][0]
+    curl("-b", "_e2e_staff.txt", "-d", "tpl=tpl-1", "-d", "lesson=%s" % lid2,
+         "-d", "title=TPL-CHECK", "http://localhost:8093/staff/tpl/new")
+    db = json.loads(io.open(files[0], encoding="utf-8").read())
+    made = [t for t in db["задания"] if t.get("title") == "TPL-CHECK"]
+    chk("task from template created", len(made) == 1
+        and made[0].get("lesson") == lid2)
+    src_keys = [f.get("ключ") for f in t0src.get("форма", [])]
+    new_keys = [f.get("ключ") for f in (made[0].get("форма", [])
+                                        if made else [])]
+    chk("template form + criteria carried",
+        bool(made) and new_keys == src_keys
+        and (made[0].get("настройки", {}).get("критерии")
+             == t0src.get("настройки", {}).get("критерии")))
+    curl("-b", "_e2e_staff.txt", "-d", "tpl=tpl-1",
+         "http://localhost:8093/staff/tpl/del")
+    kv = io.open(os.path.join("_scntest", "модули", "tasktpl",
+                              "шаблоны.json"), encoding="utf-8").read()
+    chk("template deleted", json.loads(kv).get("items") == [])
+
     lf = glob.glob("_scntest/лог/*.jsonl")
     chk("audit log written", bool(lf))
     txt = "".join(io.open(f, encoding="utf-8").read() for f in lf)
@@ -316,6 +358,23 @@ try:
                         capture_output=True)
     chk("submit redirects to my sub",
         "Location: /mysub/" in rd.stdout.decode("utf-8", "replace"))
+
+    # мои задания (модуль mytasks)
+    tpnav = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
+    chk("my tasks link in topbar", 'href="/my"' in tpnav)
+    mp = curl("-b", "_e2e_s1.txt", "http://localhost:8093/my")
+    chk("my page: task listed with status",
+        "/task/%s" % tid in mp and "mx-sent" in mp)
+    chk("my page: my sub link", "/mysub/" in mp)
+    curl("-b", "_e2e_staff.txt",
+         "http://localhost:8093/staff/task_off?task=%s&back=/staff/task/%s"
+         % (tid, tid))
+    mp2 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/my")
+    chk("my page hides revoked task", "/task/%s" % tid not in mp2)
+    curl("-b", "_e2e_staff.txt", "-d", "task=%s" % tid, "-d", "all=on",
+         "http://localhost:8093/staff/task_issue")
+    mp3 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/my")
+    chk("my page shows restored task", "/task/%s" % tid in mp3)
 
     # снятие выдачи
     curl("-b", "_e2e_staff.txt",

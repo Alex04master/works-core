@@ -352,6 +352,40 @@ try {
   curl.exe -s -o "$PWD\_bak.zip" -b "$PWD\_staff.txt" 'http://localhost:8099/staff/backup'
   python -X utf8 tests\_chk_backup.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   backup zip + auto copy' } else { Write-Output 'FAIL backup'; $script:fail++ }
+
+  # ---- works zip (module workszip) ----
+  $tp9 = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/staff/task/t1'
+  Chk 'works button on task page' ($tp9 -match '/staff/works/')
+  Chk 'tpl button on task page' ($tp9 -match '/staff/tpl/save')
+  $wpg = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/staff/works'
+  Chk 'works chooser page' ($wpg -match 'staff-card')
+  curl.exe -s -o "$PWD\_works.zip" -b "$PWD\_staff.txt" 'http://localhost:8099/staff/works/t1'
+  python -X utf8 tests\_chk_works.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   works zip built' } else { Write-Output 'FAIL works zip'; $script:fail++ }
+
+  # ---- task templates (module tasktpl) ----
+  curl.exe -s -b "$PWD\_staff.txt" -d 'task=t1' 'http://localhost:8099/staff/tpl/save' | Out-Null
+  $tplp = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/staff/tpl'
+  Chk 'template listed' ($tplp -match 'tpl/del')
+  Chk 'template create form' ($tplp -match 'tpl/new')
+  $tn = curl.exe -s -i -b "$PWD\_staff.txt" -d 'tpl=tpl-1' -d 'lesson=l1' -d 'title=tpl-made' 'http://localhost:8099/staff/tpl/new'
+  Chk 'task from template redirects' ($tn -match 'Location: /staff/task/t')
+  python -X utf8 tests\_chk_tpl.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   task from template' } else { Write-Output 'FAIL task from template'; $script:fail++ }
+
+  # ---- my tasks (module mytasks) ----
+  $mp = curl.exe -s -b "$PWD\_ck.txt" 'http://localhost:8099/my'
+  Chk 'my tasks lists t1' ($mp -match '/task/t1')
+  Chk 'my tasks shows statuses' ($mp -match 'mx-sent')
+  Chk 'my tasks shows waiting' ($mp -match 'mx-wait')
+  $t10 = curl.exe -s -b "$PWD\_ck.txt" 'http://localhost:8099/task/t1'
+  Chk 'my tasks link in topbar' ($t10 -match 'href="/my"')
+  curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/task_off?task=$scnTid&back=/staff/task/$scnTid" | Out-Null
+  $mp2 = curl.exe -s -b "$PWD\_ck.txt" 'http://localhost:8099/my'
+  Chk 'my tasks hides revoked' ($mp2 -notmatch "/task/$scnTid")
+  curl.exe -s -b "$PWD\_staff.txt" -d "task=$scnTid" -d 'all=on' 'http://localhost:8099/staff/task_issue' | Out-Null
+  $mp3 = curl.exe -s -b "$PWD\_ck.txt" 'http://localhost:8099/my'
+  Chk 'my tasks shows restored' ($mp3 -match "/task/$scnTid")
 } finally {
   Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 }
