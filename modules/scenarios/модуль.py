@@ -11,6 +11,7 @@
 Отчёт по заданию бригада сдаёт один на всех (см. модуль бригад).
 """
 import io
+import json
 import os
 import re
 import shutil
@@ -259,9 +260,12 @@ function _imp(f){
                 mat_names.append(fn)
         lesson = ctx.get_lesson(lid)
         if lesson is not None:
+            # студентам — только раздатка (02), планы (05), обозначения (06)
             lesson["материалы"] = [
                 {"тип": "файл", "имя": fn} for fn in mat_names
-                if fn.lower().endswith(".html")]
+                if fn.lower().endswith(".html")
+                and (fn.startswith("02_") or fn.startswith("05_")
+                     or fn.startswith("06_"))]
             ctx.save()
 
         n_tasks = 0
@@ -271,14 +275,15 @@ function _imp(f){
             ttitle = "%s · %s" % (card.get("id", ""),
                                   _clean_title(card.get("title", "")))
             form = [
-                {"ключ": "plan", "тип": "file",
-                 "вопрос": "План с размещёнными устройствами (фото/скан)",
-                 "обязательно": True},
+                {"ключ": "plan_data", "тип": "hidden",
+                 "вопрос": "Размещение устройств на плане"},
                 {"ключ": "calc", "тип": "textarea",
                  "вопрос": "Расчёты, ведомость ШС, обоснование",
+                 "обязательно": True,
                  "строк": 7, "место": "Формулы, число ИП, шлейфы, выводы…"},
             ]
-            ctx.add_task(lid, ttitle, _card_desc(card, ev), form, None)
+            ctx.add_task(lid, ttitle, _card_desc(card, ev), form,
+                         {"план": card.get("id", "")})
             n_tasks += 1
 
         imported.setdefault(cid, {})[kit] = {"lid": lid, "tasks": n_tasks}
@@ -286,6 +291,165 @@ function _imp(f){
         ctx.log("сценарий %s -> курс %s: занятие %s, заданий %d"
                 % (kit, cid, lid, n_tasks))
         handler._send_text(200, "ok")
+        return handler._SENT
+
+    # ── Интерактивный план (студент — редактор, преподаватель — просмотр) ──
+    PLAN_TPL = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>План сооружения — works-core</title>
+<style>
+body{font:14px/1.45 'Segoe UI',Tahoma,sans-serif;color:#333;margin:0;padding:12px;background:#fff}
+.tools{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center}
+.tool{padding:6px 10px;border:2px solid #e0e0e0;border-radius:8px;cursor:pointer;background:#f8f9fa;font-weight:600;font-size:12.5px;display:inline-flex;align-items:center;gap:6px;transition:all .15s;font-family:inherit}
+.tool:hover{transform:translateY(-1px)}
+.tool.active{border-color:#667eea;background:#eef2ff;color:#667eea}
+.sw{width:13px;height:13px;border-radius:50%;display:inline-block;border:2px solid #999;box-sizing:border-box}
+.sw.sq{border-radius:3px}.sw.rc{border-radius:2px;width:19px}
+svg{display:block;background:#fafbfe;border:1px solid #e5e7eb;border-radius:8px;cursor:crosshair;max-width:100%}
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0}
+.cnt{font-size:12px;color:#555;background:#f8f9fa;border-radius:8px;padding:3px 8px}
+.hint{color:#888;font-size:12px}
+body.ro .tools{display:none}body.ro svg{cursor:default;background:#f8fafc}
+.err{color:#b91c1c;font-weight:600}
+</style></head><body>
+<div id="app"><p class="hint">Загрузка данных плана…</p></div>
+<script>var TID=__TID__,MATS=__MATS__,PLAN_ID=__PLANID__,RO=__RO__,INIT=__INIT__;</script>
+<script src="__SRC1__"></script>
+<script src="__SRC2__"></script>
+<script>
+function _esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+function boot(){
+  var EV=window.EVENT||{}, ALL=window.PLANS||[];
+  var PL=null; for(var i=0;i<ALL.length;i++){if(ALL[i].id===PLAN_ID){PL=ALL[i];break}}
+  var app=document.getElementById("app");
+  if(!PL){app.innerHTML='<p class="err">План не найден (комплект не содержит плана «'+_esc(PLAN_ID)+'»).</p>';return}
+  var LEG=EV.legend||[];
+  var xs=[],ys=[];PL.rooms.forEach(function(r){xs.push(r.x,r.x+r.w);ys.push(r.y,r.y+r.h)});
+  var mg=0.6,x0=Math.min.apply(null,xs)-mg,y0=Math.min.apply(null,ys)-mg;
+  var w=Math.max.apply(null,xs)+mg-x0,h=Math.max.apply(null,ys)+mg-y0;
+  var tb='<div class="tools">';
+  if(!RO){LEG.forEach(function(l,i){
+    var sh=(l.shape==="square")?" sq":(l.shape==="rect")?" rc":"";
+    tb+='<button type="button" class="tool" data-i="'+i+'"><span class="sw'+sh+'" style="background:'+_esc(l.fill||"#fff")+';border-color:'+_esc(l.color||"#666")+'"></span>'+_esc(l.label)+'</button>'});
+    tb+='<button type="button" class="tool" data-i="-1"><span class="sw" style="background:#fff"></span>Убрать (ластик)</button>';
+    tb+='<button type="button" class="tool" id="clr">Очистить всё</button>';
+  } else { tb+='<span class="hint">Режим просмотра — размещение студента.</span>'; }
+  tb+='</div><div class="bar" id="cnt"></div>';
+  app.innerHTML=tb+'<svg id="svg" viewBox="'+x0+" "+y0+" "+w+" "+h+'" width="100%" height="600"></svg>';
+  if(RO)document.body.className="ro";
+  var svg=document.getElementById("svg");
+  var dev=(RO&&INIT)?INIT.slice():load();
+  var act=RO?-2:0;
+  function short(l){return String(l).split("(")[0].trim()}
+  function draw(){
+    var s="";
+    PL.rooms.forEach(function(r){
+      s+='<rect x="'+r.x+'" y="'+r.y+'" width="'+r.w+'" height="'+r.h+'" fill="#fff" stroke="#94a3b8" stroke-width="0.06"/>';
+      s+='<text x="'+(r.x+r.w/2)+'" y="'+(r.y+r.h/2)+'" font-size="0.4" text-anchor="middle" fill="#475569">'+_esc(r.n)+(r.d?" · "+_esc(r.d):"")+"</text>";
+    });
+    dev.forEach(function(d,i){
+      var l=null;for(var j=0;j<LEG.length;j++){if(LEG[j].key===d.t){l=LEG[j];break}}
+      l=l||{color:"#667eea",shape:"circle",fill:"#fff"};
+      var c=l.color||"#667eea";
+      if(l.shape==="square"){s+='<rect x="'+(d.x-0.28)+'" y="'+(d.y-0.28)+'" width="0.56" height="0.56" fill="'+_esc(l.fill||"#fff")+'" stroke="'+c+'" stroke-width="0.07"/>'}
+      else if(l.shape==="rect"){s+='<rect x="'+(d.x-0.85)+'" y="'+(d.y-0.22)+'" width="1.7" height="0.44" rx="0.08" fill="'+_esc(l.fill||"#fff")+'" stroke="'+c+'" stroke-width="0.06"/>'}
+      else{s+='<circle cx="'+d.x+'" cy="'+d.y+'" r="0.3" fill="'+_esc(l.fill||"#fff")+'" stroke="'+c+'" stroke-width="0.07"/>'}
+      var tx=l.planText||l.text||"";
+      if(tx){s+='<text x="'+d.x+'" y="'+(d.y+0.12)+'" font-size="0.3" text-anchor="middle" fill="'+c+'" font-weight="bold">'+_esc(tx)+"</text>"}
+      s+='<circle class="hit" data-i="'+i+'" cx="'+d.x+'" cy="'+d.y+'" r="0.42" fill="transparent"/>';
+    });
+    svg.innerHTML=s;
+    var c2={};dev.forEach(function(d){c2[d.t]=(c2[d.t]||0)+1});
+    var cc="Устройств: "+dev.length;
+    LEG.forEach(function(l){if(c2[l.key])cc+=' <span class="cnt">'+_esc(short(l.label))+" × "+c2[l.key]+"</span>"});
+    document.getElementById("cnt").innerHTML=cc;
+    if(!RO){try{localStorage.setItem("wcplan_"+TID,JSON.stringify(dev))}catch(e){}}
+  }
+  svg.addEventListener("click",function(e){
+    if(RO)return;
+    var t=e.target;
+    if(t.classList&&t.classList.contains("hit")){
+      if(act===-1){dev.splice(+t.getAttribute("data-i"),1);draw()}
+      return;
+    }
+    if(act<0)return;
+    var pt=svg.createSVGPoint();pt.x=e.clientX;pt.y=e.clientY;
+    var p=pt.matrixTransform(svg.getScreenCTM().inverse());
+    var l=LEG[act];if(!l)return;
+    dev.push({t:l.key,x:Math.round(p.x*100)/100,y:Math.round(p.y*100)/100});
+    draw();
+  });
+  if(!RO){Array.prototype.forEach.call(document.querySelectorAll(".tool"),function(b){
+    b.addEventListener("click",function(){
+      if(b.id==="clr"){dev=[];draw();return}
+      act=+b.getAttribute("data-i");
+      Array.prototype.forEach.call(document.querySelectorAll(".tool"),function(x){x.classList.remove("active")});
+      b.classList.add("active");
+    });
+  });
+  var first=document.querySelector(".tool");if(first)first.classList.add("active");}
+  function load(){try{return JSON.parse(localStorage.getItem("wcplan_"+TID)||"[]")}catch(e){return[]}}
+  draw();
+}
+if(document.readyState!=="loading")boot();else document.addEventListener("DOMContentLoaded",boot);
+</script></body></html>"""
+
+    @ctx.add_route("GET", "/plan/", access="any")
+    def plan_page(handler, params):
+        parts = params.get("_parts", [])
+        tid = parts[0] if parts else ""
+        task = ctx.get_task(tid)
+        if not task:
+            handler._send_html("<h1>Задание не найдено</h1>")
+            return handler._SENT
+        lesson = ctx.get_lesson(task.get("lesson", ""))
+        course_id = lesson.get("course", "") if lesson else ""
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        is_staff = handler._is_staff()
+        sid = handler._student()
+        if not is_staff and not sid:
+            handler._redirect("/_login?next=" + urllib.parse.quote(handler.path))
+            return handler._SENT
+        if not is_staff and course_id and not ctx.can_access(course_id, sid):
+            handler._send_html("<h1>Нет доступа</h1>")
+            return handler._SENT
+        plan_id = (task.get("настройки") or {}).get("план", "")
+        ro = False
+        init = None
+        if is_staff:
+            sub_key = (qs.get("sub") or [""])[0]
+            if sub_key and "__" in sub_key:
+                _t, _s = sub_key.split("__", 1)
+                sub = ctx.get_submission(_t, _s)
+                if sub:
+                    ver = None
+                    vn = (qs.get("v") or [""])[0]
+                    if vn.isdigit():
+                        for x in sub.get("versions", []):
+                            if x.get("n") == int(vn):
+                                ver = x
+                                break
+                    ver = ver or (sub.get("versions") or [{}])[-1]
+                    try:
+                        init = json.loads(
+                            ver.get("answers", {}).get("plan_data") or "[]")
+                        if not isinstance(init, list):
+                            init = []
+                    except ValueError:
+                        init = []
+                    ro = True
+        mats = "/materials/%s/%s" % (course_id, lesson["id"] if lesson else "")
+        init_js = "[]" if not init else \
+            json.dumps(init, ensure_ascii=False).replace("</", "<\\/")
+        html = (PLAN_TPL
+                .replace("__TID__", json.dumps(tid, ensure_ascii=False))
+                .replace("__MATS__", json.dumps(mats))
+                .replace("__PLANID__", json.dumps(plan_id, ensure_ascii=False))
+                .replace("__RO__", "true" if ro else "false")
+                .replace("__INIT__", init_js)
+                .replace("__SRC1__", mats + "/event.js")
+                .replace("__SRC2__", mats + "/plans.js"))
+        handler._send_html(html)
         return handler._SENT
 
     ctx.log("загружен: сценарии УП (%s)" % (base or "папка не задана"))

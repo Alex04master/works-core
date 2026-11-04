@@ -726,20 +726,8 @@ class WorksServer(http.server.ThreadingHTTPServer):
             items = "".join(
                 '<li><a href="/lesson/%s">%s</a></li>' % (l["id"], _e(l.get("title", "")))
                 for l in lessons)
-            mats_html = ""
-            for l in lessons:
-                mats = handler._core.distribute(cid, l["id"])
-                if mats:
-                    mats_html += "<h3>%s</h3><ul>" % _e(l["title"])
-                    for m in mats:
-                        name = m.get("name") or m.get("имя", "")
-                        if m.get("type") == "file" or m.get("тип") == "файл":
-                            path = "/materials/%s/%s/%s" % (cid, l["id"],
-                                                           urllib.parse.quote(name))
-                            mats_html += '<li><a href="%s">%s</a></li>' % (path, _e(name))
-                        else:
-                            mats_html += "<li>%s</li>" % _e(name)
-                    mats_html += "</ul>"
+            # Материалы скрыты от студентов: сценарные страницы открываются
+            # из заданий (кнопки + интерактивный план).
             # ── Бригады: названия придумывают студенты, лимит задаёт преподаватель
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
             bmsg = ""
@@ -798,8 +786,7 @@ class WorksServer(http.server.ThreadingHTTPServer):
                      ) % (bmsg, mine_html,
                           rows or '<li class="hint">Пока нет ни одной бригады.</li>',
                           _e(cid), bmax)
-            body = ('<ul class="lesson-list">%s</ul><h2>Материалы</h2>%s%s'
-                    % (items, mats_html, bhtml))
+            body = ('<ul class="lesson-list">%s</ul>%s' % (items, bhtml))
             return handler._core.page(course.get("title", ""), body, course=course)
 
         @r.add("POST", "/brigade")
@@ -877,25 +864,11 @@ class WorksServer(http.server.ThreadingHTTPServer):
                         sub_info = " [%s]" % icons.get(sub.get("status", ""), sub.get("status", ""))
                 items += '<li><a href="/task/%s">%s</a>%s</li>' % (
                     t["id"], _e(t.get("title", "")), sub_info)
-            mats_html = ""
-            mats = handler._core.distribute(lesson.get("course", ""), lid)
-            if mats:
-                mats_html = "<ul>"
-                for m in mats:
-                    name = m.get("name") or m.get("имя", "")
-                    if m.get("type") == "file" or m.get("тип") == "файл":
-                        path = "/materials/%s/%s/%s" % (
-                            lesson.get("course", ""), lid, urllib.parse.quote(name))
-                        mats_html += '<li><a href="%s">%s</a></li>' % (path, _e(name))
-                    else:
-                        mats_html += "<li>%s</li>" % _e(name)
-                mats_html += "</ul>"
             body = ('<p><a href="/course/%s">%s</a></p>'
-                    '<ul class="task-list">%s</ul>'
-                    "<h2>Материалы</h2>%s") % (
+                    '<ul class="task-list">%s</ul>') % (
                 _e(lesson.get("course", "")),
                 _e(course.get("title", "") if course else ""),
-                items, mats_html or "<p>Нет материалов.</p>")
+                items)
             return handler._core.page(lesson.get("title", ""), body,
                                       course=course, lesson=lesson)
 
@@ -973,8 +946,48 @@ class WorksServer(http.server.ThreadingHTTPServer):
                     br_html = ('<p class="hint">Сдать одним отчётом на бригаду? '
                                '<a href="%s">Создайте бригаду или вступите</a> '
                                'на странице курса.</p>' % _cb)
+            # ── Материалы сценария + интерактивный план ──
+            scn_html = ""
+            if lesson and course:
+                _mats = handler._core.distribute(course["id"], lesson["id"])
+                _links = []
+                for m in _mats:
+                    _n = m.get("name") or m.get("имя", "")
+                    if m.get("тип") != "файл":
+                        continue
+                    _lbl = ""
+                    if _n.startswith("02_"):
+                        _lbl = "📖 Раздатка"
+                    elif _n.startswith("05_"):
+                        _lbl = "📐 План сооружений"
+                    elif _n.startswith("06_"):
+                        _lbl = "🔤 Условные обозначения"
+                    if _lbl:
+                        _links.append(
+                            '<a class="btn btn-secondary btn-sm" target="_blank" '
+                            'href="/materials/%s/%s/%s">%s</a>'
+                            % (_e(course["id"]), _e(lesson["id"]),
+                               urllib.parse.quote(_n), _lbl))
+                if _links:
+                    scn_html = (
+                        '<div class="task-desc"><h3>📚 Материалы сценария</h3>'
+                        '<p>%s</p></div>'
+                        '<div class="task-desc"><h3>🖊 Интерактивный план</h3>'
+                        '<p class="hint">Выберите обозначение и щёлкните по плану. '
+                        'Клик по установленному устройству — убрать. Черновик '
+                        'сохраняется автоматически и уйдёт вместе с отчётом.</p>'
+                        '<iframe src="/plan/%s" style="width:100%%;height:680px;'
+                        'border:1px solid #e0e0e0;border-radius:12px" '
+                        'title="Интерактивный план"></iframe>'
+                        '<script>(function(){var f=document.querySelector'
+                        "('form.task-form');if(!f)return;"
+                        "f.addEventListener('submit',function(){try{"
+                        "var v=localStorage.getItem('wcplan_%s')||'[]';"
+                        "var i=f.querySelector('[name=\"plan_data\"]');"
+                        "if(i)i.value=v;}catch(e){}});})();</script>"
+                    ) % (" ".join(_links), _e(tid), _e(tid))
             body = ('<p><a href="/lesson/%s">%s</a></p>'
-                    '<div class="task-desc">%s</div>%s%s'
+                    '<div class="task-desc">%s</div>%s%s%s'
                     '<form method="post" action="/api/submit"'
                     ' enctype="multipart/form-data" class="task-form">'
                     '<input type="hidden" name="task" value="%s">%s%s'
@@ -982,7 +995,7 @@ class WorksServer(http.server.ThreadingHTTPServer):
                 _e(lesson["id"] if lesson else ""),
                 _e(lesson["title"] if lesson else ""),
                 _md(task_data.get("описание", "")),
-                dl_html, sub_info, tid, form_html, br_html)
+                scn_html, dl_html, sub_info, tid, form_html, br_html)
             return handler._core.page(task_data.get("title", ""), body,
                                       course=course, lesson=lesson)
 

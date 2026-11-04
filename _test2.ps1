@@ -150,6 +150,29 @@ try {
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   scenario import' } else { Write-Output 'FAIL scenario import'; $script:fail++ }
   $h1b = curl.exe -s -b "$PWD\_ck.txt" 'http://localhost:8099/course/c1'
   Chk 'scenario lesson visible' ($h1b -match 'SCN-TEST')
+  $h1b | Out-File -Encoding utf8 "$PWD\_tmp_page.html"
+  python -X utf8 _chk_nomat.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   materials hidden from students' } else { Write-Output 'FAIL materials hidden from students'; $script:fail++ }
+
+  # ---- interactive plan widget (fake kit with files) ----
+  python -X utf8 _mk_kit.py make | Out-Null
+  curl.exe -s -b "$PWD\_staff.txt" -H 'Content-Type: application/json' -d '@_smoke_kit.json' 'http://localhost:8099/staff/scenarios/import' | Out-Null
+  $scnTid = (python -X utf8 _chk_scn2.py)
+  if ($LASTEXITCODE -ne 0) { Write-Output 'FAIL scenario kit files'; $script:fail++ } else { Write-Output 'OK   scenario kit files (mats 02/05/06, plans stripped)' }
+  $tp3 = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
+  Chk 'scenario task has plan widget' ($tp3 -match 'src="/plan/')
+  Chk 'scenario task handout links' ($tp3 -match 'target="_blank"')
+  $pp = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/plan/$scnTid"
+  Chk 'plan widget renders' ($pp -match 'wcplan_' -and $pp -match 'SK-1')
+  curl.exe -s -b "$PWD\_ck.txt" -F "task=$scnTid" -F 'calc=test calc' -F 'plan_data=<_plan_data.json' 'http://localhost:8099/api/submit' | Out-Null
+  $env:PLANKEY = "$scnTid" + '__s1'
+  python -X utf8 _chk_subplan.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   plan data stored with report' } else { Write-Output 'FAIL plan data stored with report'; $script:fail++ }
+  $sp3 = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/sub/${scnTid}__s1"
+  Chk 'sub page links to plan view' ($sp3 -match '/plan/')
+  $pv = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/plan/${scnTid}?sub=${scnTid}__s1&v=1"
+  Chk 'teacher sees student plan (read-only)' ($pv -match 'RO=true')
+  python -X utf8 _mk_kit.py remove | Out-Null
 
 } finally {
   Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue

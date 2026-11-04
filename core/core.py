@@ -163,6 +163,9 @@ def _render_field(fd, value=""):
     if typ == "static":
         return f'<h3 class="field-block">{_e(fd.get("подсказка", label))}</h3>'
 
+    if typ == "hidden":
+        return f'<input type="hidden" name="{_e(key)}" value="{_e(val)}">'
+
     if typ == "textarea":
         rows = int(fd.get("строк", 5))
         placeholder = _e(fd.get("место", ""))

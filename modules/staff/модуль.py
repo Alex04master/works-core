@@ -489,7 +489,7 @@ def register(ctx):
         answer_rows = ""
         for fd in (task.get("форма", []) if task else []):
             key = fd.get("ключ", "")
-            if fd.get("тип") == "file":
+            if fd.get("тип") in ("file", "hidden"):
                 continue
             val = answers.get(key, "")
             if not val and key not in answers:
@@ -497,6 +497,27 @@ def register(ctx):
             q = fd.get("вопрос") or key
             answer_rows += '<tr><td>%s</td><td>%s</td></tr>' % (
                 _e(q), _e(str(val)[:200]))
+        _pd = answers.get("plan_data") or ""
+        if _pd:
+            import json as _json
+            try:
+                _dev = _json.loads(_pd)
+                _cnt = {}
+                for _x in (_dev if isinstance(_dev, list) else []):
+                    if isinstance(_x, dict) and _x.get("t"):
+                        _cnt[_x["t"]] = _cnt.get(_x["t"], 0) + 1
+                _sum = ", ".join("%s × %d" % (k, n)
+                                 for k, n in sorted(_cnt.items()))
+                answer_rows += (
+                    '<tr><td>Интерактивный план</td>'
+                    '<td>Устройств: %d%s '
+                    '<a href="/plan/%s?sub=%s&amp;v=%d" target="_blank">'
+                    'Смотреть план</a></td></tr>') % (
+                        len(_dev) if isinstance(_dev, list) else 0,
+                        (" — " + _e(_sum)) if _sum else "",
+                        _e(tid), _e(full_key), v.get("n", 1))
+            except ValueError:
+                pass
 
         verdict_form = (
             '<form method="post" action="/staff/verdict" class="staff-card">'

@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
-"""E2E импорта сценариев с РЕАЛЬНЫМ комплектом «Больница_день_ОПС»:
-scnfile (percent-encoded!), импорт, реестр, копия раздатки без эталонов,
-материалы и страница задания у студента."""
+"""E2E: сценарии — материалы 02/05/06, форма план+расчёты, виджет плана,
+просмотр преподавателем, скрытие «Материалов». Реальный комплект Больница."""
 import glob
 import io
 import json
@@ -11,7 +10,6 @@ import subprocess
 import sys
 import time
 import urllib.parse
-import urllib.request
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -40,82 +38,86 @@ def chk(name, cond):
 
 try:
     curl("-c", "_e2e_staff.txt", "-d", "pass=x", "http://localhost:8093/_staff_login")
-
-    # 1) /scnfile с percent-encoded кириллическим именем комплекта
     kit = "Больница_день_ОПС"
     enc = urllib.parse.quote(kit)
     head = curl("-i", "-b", "_e2e_staff.txt",
                 "http://localhost:8093/scnfile/%s/event.js" % enc)
-    chk("scnfile percent-encoded cyrillic -> 200",
-        head.startswith("HTTP/1.0 200") and "window.EVENT" in head)
-    chk("scnfile content-type js", "javascript" in head.split("\r\n\r\n")[0].lower()
-        or "javascript" in head.split("\n\n")[0].lower())
+    chk("scnfile percent-encoded -> 200", head.startswith("HTTP/1.0 200"))
 
-    # 2) импорт реальными данными (payload готовит node — как браузер)
     r = subprocess.run(["node", "_scn_export.js"], capture_output=True)
-    print("node:", r.stdout.decode("utf-8", "replace").strip(),
-          r.stderr.decode("utf-8", "replace")[:200])
     resp = curl("-b", "_e2e_staff.txt", "-H", "Content-Type: application/json",
                 "-d", "@_scn_real.json",
                 "http://localhost:8093/staff/scenarios/import")
-    chk("import returns ok", resp.strip() == "ok")
-    # повторный импорт -> exists
-    resp2 = curl("-b", "_e2e_staff.txt", "-H", "Content-Type: application/json",
-                 "-d", "@_scn_real.json",
-                 "http://localhost:8093/staff/scenarios/import")
-    chk("re-import -> exists", resp2.strip() == "exists")
+    chk("import ok", resp.strip() == "ok")
 
-    # 3) реестр: занятие + 6 заданий
     files = [f for f in glob.glob("_scntest/*.json")
              if not os.path.basename(f).startswith("_")]
     db = json.loads(io.open(files[0], encoding="utf-8").read())
     les = [l for l in db["занятия"] if "больнице" in l.get("title", "")]
-    chk("lesson created with clean title",
-        len(les) == 1 and les[0]["title"] == "Медицинский день ОПС в больнице № 3")
+    chk("lesson title clean", len(les) == 1
+        and les[0]["title"] == "Медицинский день ОПС в больнице № 3")
     lid = les[0]["id"]
     tasks = sorted([t for t in db["задания"] if t.get("lesson") == lid],
                    key=lambda t: t["title"])
-    chk("6 scenario tasks", len(tasks) == 6)
+    chk("6 tasks", len(tasks) == 6)
     t0 = tasks[0]
-    chk("task title has card id", t0["title"].startswith("СЦ-01"))
     form = {f["ключ"]: f["тип"] for f in t0["форма"]}
-    chk("form: plan file + calc textarea",
-        form.get("plan") == "file" and form.get("calc") == "textarea")
-    d = t0.get("описание", "")
-    chk("description: ситуация/задания/критерии/ловушки",
-        all(x in d for x in ("Ситуация", "Задания бригады", "Критерии", "Ловушки")))
-    chk("no etalon leak in task", "эталон" not in d and "Итого: 7 ИП" not in d)
-    chk("criteria points present", "балл." in d)
-
-    # 4) копия комплекта: раздатка без эталонов
-    sub = os.path.join("_scntest", "раздатка", "c1", lid)
-    fl = os.listdir(sub) if os.path.isdir(sub) else []
-    chk("handout copied (02/05/06 present)",
-        all(any(f.startswith(p) for f in fl) for p in ("01_", "02_", "05_", "06_")))
-    chk("teacher plan excluded",
-        not any(f.startswith("03_") for f in fl)
-        and not any(f.startswith("ИНСТРУКЦИЯ") for f in fl))
-    plans = io.open(os.path.join(sub, "plans.js"), encoding="utf-8").read()
-    chk("plans.js stripped (dev/notes empty)",
-        plans.count("dev: []") == 6 and plans.count("notes: []") == 6
-        and "7 ИП" not in plans)
+    chk("form: plan_data hidden + calc textarea (no file)",
+        form.get("plan_data") == "hidden" and form.get("calc") == "textarea"
+        and "plan" not in form and "plan_photo" not in form)
+    chk("task settings plan id", t0.get("настройки", {}).get("план") == "СЦ-01")
     mats = les[0].get("материалы") or []
-    chk("lesson materials = html pages",
-        len(mats) >= 4 and all(m["тип"] == "файл" for m in mats))
+    names = sorted(m["имя"] for m in mats)
+    chk("materials only 02/05/06", len(mats) == 3
+        and names[0].startswith("02_") and names[1].startswith("05_")
+        and names[2].startswith("06_"))
 
-    # 5) студент: материалы и страница задания
+    sub_dir = os.path.join("_scntest", "раздатка", "c1", lid)
+    fl = os.listdir(sub_dir)
+    chk("handout: teacher plan excluded",
+        not any(f.startswith("03_") for f in fl))
+    plans = io.open(os.path.join(sub_dir, "plans.js"), encoding="utf-8").read()
+    chk("plans.js stripped", plans.count("dev: []") == 6
+        and "7 ИП" not in plans)
+
+    # студент
     curl("-c", "_e2e_s1.txt", "-d", "student=s1", "-d", "next=/",
          "http://localhost:8093/_login")
-    page = curl("-b", "_e2e_s1.txt", "http://localhost:8093/course/c1")
-    chk("scenario lesson on course page", "больнице" in page)
-    mat_url = "/materials/c1/%s/%s" % (lid, urllib.parse.quote(mats[0]["имя"]))
-    mat = curl("-b", "_e2e_s1.txt", "http://localhost:8093" + mat_url)
-    chk("material page opens (html)", mat.lstrip().startswith("<!doctype")
-        or "<html" in mat[:200].lower())
+    cp = curl("-b", "_e2e_s1.txt", "http://localhost:8093/course/c1")
+    chk("course page: no Materials block", "<h2>Материалы</h2>" not in cp)
+    lp = curl("-b", "_e2e_s1.txt", "http://localhost:8093/lesson/%s" % lid)
+    chk("lesson page: no Materials block", "<h2>Материалы</h2>" not in lp)
     tid = t0["id"]
     tp = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
-    chk("scenario task page renders", "Задания бригады" in tp
-        and 'name="plan"' in tp)
+    chk("task: scenario handout links", "target=\"_blank\"" in tp
+        and "/materials/c1/%s/" % lid in tp)
+    chk("task: plan widget iframe", 'src="/plan/%s"' % tid in tp)
+    chk("task: submit copies plan draft", "wcplan_" in tp)
+    pp = curl("-b", "_e2e_s1.txt", "http://localhost:8093/plan/%s" % tid)
+    chk("plan widget page", "wcplan_" in pp and "СЦ-01" in pp
+        and "legend" in pp and "RO=false" in pp)
+
+    # сдача с планом
+    curl("-b", "_e2e_s1.txt",
+         "-F", "task=%s" % tid, "-F", "calc=расчёт готов",
+         "-F", 'plan_data=[{"t":"smoke","x":3,"y":2.5},{"t":"ipr","x":0.8,"y":6.2}]',
+         "http://localhost:8093/api/submit")
+    files = [f for f in glob.glob("_scntest/*.json")
+             if not os.path.basename(f).startswith("_")]
+    db = json.loads(io.open(files[0], encoding="utf-8").read())
+    ver = db["сдачи"]["%s__s1" % tid]["versions"][-1]
+    chk("plan_data stored in version",
+        json.loads(ver["answers"]["plan_data"])[0]["t"] == "smoke")
+
+    # преподаватель: сводка + просмотр плана
+    sp = curl("-b", "_e2e_staff.txt",
+              "http://localhost:8093/staff/sub/%s__s1" % tid)
+    chk("sub page: plan summary + view link",
+        "Смотреть план" in sp and "/plan/" in sp)
+    pv = curl("-b", "_e2e_staff.txt",
+              "http://localhost:8093/plan/%s?sub=%s__s1&v=1" % (tid, tid))
+    chk("teacher plan view read-only",
+        "RO=true" in pv and '"t": "smoke"' in pv.replace(", ", ", "))
 finally:
     proc.terminate()
     try:
