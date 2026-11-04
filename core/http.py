@@ -999,6 +999,22 @@ class WorksServer(http.server.ThreadingHTTPServer):
                 if sub.get("бригада"):
                     sub_info += '<p>👥 Бригада «%s» — участников: %d</p>' % (
                         _e(sub["бригада"]), len(sub.get("participants", [])))
+                sub_info += ('<p><a class="btn-sm" href="/mysub/%s">'
+                             '📄 Открыть статус сдачи</a></p>') % _e(tid)
+            else:
+                _mys = handler._core.sub_for(tid, sid)
+                if _mys:
+                    _mv = handler._core.latest(_mys)
+                    _mw = handler._core.student(_mys.get("student", ""))
+                    sub_info = ('<div class="sub-status">'
+                                '<h3>📤 Отчёт бригады сдан</h3>'
+                                '<p>Бригада «%s» — отчёт отправил(а): %s '
+                                '(версия %d, %s)</p>'
+                                '<p><a class="btn-sm" href="/mysub/%s">'
+                                '📄 Открыть статус сдачи</a></p></div>') % (
+                        _e(_mys.get("бригада", "")),
+                        _e(_mw.get("fio", "?") if _mw else "?"),
+                        _mv.get("n", 0), _e(_mv.get("time", "")), _e(tid))
             _stu = handler._core.student(sid)
             _brg = (_stu.get("бригада", "") or "").strip() if _stu else ""
             br_html = ""
@@ -1110,10 +1126,195 @@ class WorksServer(http.server.ThreadingHTTPServer):
                      "версия": ((sub or {}).get("versions") or [{}])[-1].get("n"),
                      "бригада": brigade or None},
                     ip=handler.client_address[0])
-                handler._redirect("/task/%s?ok=1" % tid)
+                handler._redirect("/mysub/%s" % tid)
             return _SENT
 
         
+        # ── Страница «Моя сдача»: статус отчёта для студента ────────────
+        @r.add("GET", "/mysub/", access="student")
+        def my_sub(handler, params):
+            parts = params.get("_parts", [])
+            tid = parts[0] if parts else ""
+            sid = handler._student()
+            if not sid:
+                handler._redirect("/_login?next=" +
+                                  urllib.parse.quote("/mysub/" + tid))
+                return _SENT
+            task = handler._core.task(tid)
+            if not task:
+                return handler._core.page(
+                    "Задание не найдено", "<p>Такого задания нет.</p>")
+            lesson = handler._core.lesson(task.get("lesson", ""))
+            course = (handler._core.course(lesson.get("course", ""))
+                      if lesson else None)
+            if lesson and not handler._core.can_access(
+                    lesson.get("course", ""), sid):
+                return handler._core.page(
+                    "Нет доступа",
+                    '<p class="error">Вы не зачислены на этот курс.</p>')
+            _stu = handler._core.student(sid)
+            _brg = (_stu.get("бригада", "") or "").strip() if _stu else ""
+            if not handler._core.task_for_brigade(task, _brg):
+                return handler._core.page(
+                    "Задание не выдано",
+                    '<p class="error">Это задание ещё не выдано вашей '
+                    'бригаде.</p>')
+            sub = handler._core.sub_for(tid, sid)
+            back = ('<p><a href="/task/%s">⬅ К заданию</a>%s</p>') % (
+                _e(tid), (' · <a href="/course/%s">%s</a>' % (
+                    _e(course["id"]), _e(course["title"]))
+                    if course else ""))
+            if not sub:
+                tail = (' (или её отправил одногруппник не из вашей бригады)'
+                        if _brg else '')
+                body = (back +
+                        '<div class="sub-status mysub-empty">'
+                        '<h3>📭 Сдачи пока нет</h3>'
+                        '<p>Вы ещё не отправляли отчёт по этому заданию%s.</p>'
+                        '<p><a class="btn" href="/task/%s">Перейти к заданию'
+                        '</a></p></div>') % (tail, _e(tid))
+                return handler._core.page("Моя сдача", body,
+                                          course=course, lesson=lesson)
+            v = handler._core.latest(sub)
+            icons = {"сдано": "📤", "принято": "✅", "доработка": "🔄",
+                     "отклонено": "❌"}
+            status = sub.get("status", "сдано")
+            who = handler._core.student(sub.get("student", ""))
+            fios = ", ".join(
+                (handler._core.student(p) or {}).get("fio", "?")
+                for p in (sub.get("participants") or []))
+            head = ('<div class="sub-status mysub-head">'
+                    '<h3>%s Статус: %s</h3>'
+                    '<p>Задание: <b>%s</b></p>') % (
+                icons.get(status, "📤"), _e(status),
+                _e(task.get("title", "")))
+            if sub.get("бригада"):
+                head += ('<p>👥 Отчёт бригады «%s» — отправил(а): %s</p>'
+                         '<p>Участники: %s</p>') % (
+                    _e(sub["бригада"]),
+                    _e(who.get("fio", "?") if who else "?"), _e(fios))
+            else:
+                head += '<p>👤 Личный отчёт</p>'
+            head += ('<p>Версия %d · %s%s</p>'
+                     '<p><a class="btn-sm" href="/task/%s">'
+                     '✏️ Отправить новую версию</a></p></div>') % (
+                v.get("n", 0), _e(v.get("time", "")),
+                " · ⏰ сдано после срока" if v.get("просрочено") else "",
+                _e(tid))
+            check_html = ""
+            if v.get("verdict"):
+                check_html = ('<div class="staff-card">'
+                              '<h2>Результат проверки</h2>'
+                              '<p><b>Вердикт:</b> %s</p>') % _e(v["verdict"])
+                if v.get("score") is not None:
+                    check_html += ('<p><b>Балл:</b> %s</p>'
+                                   % _e(str(v["score"])))
+                if v.get("comment"):
+                    check_html += ('<p><b>Комментарий преподавателя:</b><br>'
+                                   '%s</p>') % _e(v["comment"])
+                _chks = v.get("чек") or []
+                if _chks:
+                    _crits = ((task.get("настройки") or {})
+                              .get("критерии")) or []
+                    _items = "".join(
+                        '<li class="crit-on">✔ %s</li>' % _e(c)
+                        for i, c in enumerate(_crits) if i in _chks)
+                    if _items:
+                        check_html += ('<div class="crit-done">Критерии:'
+                                       '<ul class="crit-list">%s</ul></div>'
+                                       % _items)
+                check_html += "</div>"
+            answers = v.get("answers", {})
+            arows = ""
+            for fd in task.get("форма", []):
+                key = fd.get("ключ", "")
+                if fd.get("тип") in ("file", "hidden"):
+                    continue
+                if fd.get("тип") == "shlei":
+                    try:
+                        _rl = json.loads(answers.get(key, "") or "[]")
+                    except ValueError:
+                        _rl = []
+                    _rows = "".join(
+                        '<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td>'
+                        '<td>%s</td></tr>' % (
+                            _e(r.get("n", "")), _e(r.get("type", "")),
+                            _e(r.get("dev", "")), _e(r.get("cnt", "")),
+                            _e(r.get("note", "")))
+                        for r in (_rl if isinstance(_rl, list) else [])
+                        if isinstance(r, dict) and
+                        (r.get("n") or r.get("type") or r.get("dev")
+                         or r.get("cnt") or r.get("note")))
+                    if _rows:
+                        arows += (
+                            '<tr><td>%s</td><td><table class="shlei-view">'
+                            '<tr><th>№ шлейфа</th><th>Тип</th>'
+                            '<th>Прибор</th><th>Кол-во</th>'
+                            '<th>Комментарий</th></tr>%s</table>'
+                            '</td></tr>') % (
+                            _e(fd.get("вопрос") or key), _rows)
+                    continue
+                val = answers.get(key, "")
+                if not val and key not in answers:
+                    continue
+                arows += '<tr><td>%s</td><td>%s</td></tr>' % (
+                    _e(fd.get("вопрос") or key), _e(str(val)[:300]))
+            _pd = answers.get("plan_data") or ""
+            if _pd:
+                try:
+                    _dev = json.loads(_pd)
+                    _cnt = {}
+                    for _x in (_dev if isinstance(_dev, list) else []):
+                        if isinstance(_x, dict) and _x.get("t"):
+                            _cnt[_x["t"]] = _cnt.get(_x["t"], 0) + 1
+                    _sum = ", ".join("%s × %d" % (k, n)
+                                     for k, n in sorted(_cnt.items()))
+                    arows += ('<tr><td>Интерактивный план</td>'
+                              '<td>Устройств: %d%s</td></tr>') % (
+                        len(_dev) if isinstance(_dev, list) else 0,
+                        (" — " + _e(_sum)) if _sum else "")
+                except ValueError:
+                    pass
+            ans_html = ('<h2>Содержание отчёта</h2>'
+                        '<table class="staff-table"><tr><th>Поле</th>'
+                        '<th>Ответ</th></tr>%s</table>') % arows
+            fl = v.get("files") or {}
+            files_html = ""
+            if isinstance(fl, dict) and fl:
+                frows = ""
+                for fkey in sorted(fl):
+                    info = fl[fkey] or {}
+                    url = "/mysubfile/%s/v%d/%s" % (
+                        sub.get("key"), v.get("n", 0), fkey)
+                    size = info.get("размер", "")
+                    size_s = ("%d байт" % size) if isinstance(size, int) else ""
+                    frows += ('<tr><td><code>%s</code></td>'
+                              '<td><a href="%s">%s</a></td><td>%s</td></tr>'
+                              ) % (_e(fkey), _e(url),
+                                   _e(info.get("имя", fkey)), _e(size_s))
+                files_html = ('<h2>Файлы</h2><table class="staff-table">'
+                              '<tr><th>Поле</th><th>Файл</th>'
+                              '<th>Размер</th></tr>%s</table>') % frows
+            vrows = ""
+            for x in sub.get("versions", []):
+                vrows += ('<tr><td>v%d</td><td>%s%s</td><td>%s</td>'
+                          '<td>%s</td><td>%s</td></tr>') % (
+                    x.get("n", 0), _e(x.get("time", "")),
+                    " ⏰" if x.get("просрочено") else "",
+                    _e(x.get("verdict") or "—"),
+                    ("—" if x.get("score") is None
+                     else _e(str(x["score"]))),
+                    _e(str(x.get("comment", ""))[:120]))
+            vers_html = ('<h2>История версий</h2><table class="staff-table">'
+                         '<tr><th>Версия</th><th>Время</th><th>Вердикт</th>'
+                         '<th>Балл</th><th>Комментарий</th></tr>%s</table>'
+                         ) % vrows
+            body = (back + head + check_html + ans_html + files_html
+                    + vers_html)
+            return handler._core.page(
+                "Моя сдача", body, course=course, lesson=lesson,
+                extra_head='<meta http-equiv="refresh" content="45">')
+
         @r.add("GET", "/_subfile/", access="staff")
         def sub_file(handler, params):
             """Скачать файл из сдачи студента (только преподаватель)."""
@@ -1127,9 +1328,58 @@ class WorksServer(http.server.ThreadingHTTPServer):
             ver = None
             if sub:
                 for v in sub.get("versions", []):
-                    if str(v.get("n")) == vn:
+                    if str(v.get("n")) == vn.lstrip("v"):
                         ver = v
                         break
+            info = (ver or {}).get("files", {}).get(fkey) if ver else None
+            if not info:
+                handler._send_text(404, "Not Found")
+                return _SENT
+            local = os.path.normpath(os.path.join(handler._core.store.subs,
+                                                  str(info.get("файл", ""))))
+            base = os.path.normpath(handler._core.store.subs)
+            try:
+                inside = os.path.commonpath([local, base]) == base
+            except ValueError:
+                inside = False
+            if not inside or not os.path.isfile(local):
+                handler._send_text(404, "Not Found")
+                return _SENT
+            with open(local, "rb") as f:
+                data = f.read()
+            fname = info.get("имя") or os.path.basename(local)
+            handler.send_response(200)
+            handler.send_header("Content-Type", "application/octet-stream")
+            handler.send_header(
+                "Content-Disposition",
+                "attachment; filename*=UTF-8''" + urllib.parse.quote(str(fname)))
+            handler.send_header("Content-Length", str(len(data)))
+            handler.end_headers()
+            handler.wfile.write(data)
+            return _SENT
+
+        # ── Файлы своей сдачи (студент: свой отчёт или бригады) ────────
+        @r.add("GET", "/mysubfile/", access="student")
+        def my_sub_file(handler, params):
+            sid0 = handler._student()
+            if not sid0:
+                handler._send_text(403, "Forbidden")
+                return _SENT
+            parts = params.get("_parts", [])
+            if len(parts) < 3 or "__" not in parts[0]:
+                handler._send_text(404, "Not Found")
+                return _SENT
+            key, vn, fkey = parts[0], parts[1], parts[2]
+            tid = key.split("__", 1)[0]
+            mysub = handler._core.sub_for(tid, sid0)
+            if not mysub or mysub.get("key") != key:
+                handler._send_text(403, "Forbidden")
+                return _SENT
+            ver = None
+            for v in mysub.get("versions", []):
+                if str(v.get("n")) == vn.lstrip("v"):
+                    ver = v
+                    break
             info = (ver or {}).get("files", {}).get(fkey) if ver else None
             if not info:
                 handler._send_text(404, "Not Found")

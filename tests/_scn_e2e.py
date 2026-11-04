@@ -140,6 +140,8 @@ try:
                "http://localhost:8093/staff/lesson/%s" % lid)
     chk("matrix: solo row shows submission",
         "mx-tbl" in lmx and "mx-sent" in lmx)
+    ms0 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/mysub/%s" % tid)
+    chk("my sub page renders", "sub-status" in ms0)
 
     # преподаватель: сводка + просмотр плана
     sp = curl("-b", "_e2e_staff.txt",
@@ -191,6 +193,12 @@ try:
     chk("submission status accepted", sub2.get("status") == "принято")
     tpv = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
     chk("student sees criteria result", "crit-list" in tpv)
+    chk("task page links to my sub", "/mysub/" in tpv)
+    ms2 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/mysub/%s" % tid)
+    chk("my sub page: criteria shown", "crit-list" in ms2)
+    mf = curl("-i", "-b", "_e2e_s1.txt",
+              "http://localhost:8093/mysubfile/%s__s1/v1/firmware" % tid)
+    chk("my sub file download", mf.startswith("HTTP/1.0 200"))
     fdj = json.loads(curl("-b", "_e2e_staff.txt",
                           "http://localhost:8093/board/feed"))
     chk("board feed events",
@@ -239,6 +247,12 @@ try:
          "http://localhost:8093/staff/task_issue")
     tp3 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
     chk("issue-all restores visibility", "task-form" in tp3)
+    rd = subprocess.run(["curl.exe", "-s", "-i", "-b", "_e2e_s1.txt",
+                         "-F", "task=%s" % tid, "-F", "calc=x",
+                         "http://localhost:8093/api/submit"],
+                        capture_output=True)
+    chk("submit redirects to my sub",
+        "Location: /mysub/" in rd.stdout.decode("utf-8", "replace"))
 
     # снятие выдачи
     curl("-b", "_e2e_staff.txt",

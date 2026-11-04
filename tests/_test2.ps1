@@ -281,6 +281,16 @@ try {
   Chk 'board toast widget' ($bd -match 'toastbox' -and $bd -match '/board/feed')
   $sp5 = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/sub/${scnTid}__s1"
   Chk 'sub page renders shlei table' ($sp5 -match 'shlei-view')
+  $ms1 = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/mysub/$scnTid"
+  Chk 'my sub page status + criteria' ($ms1 -match 'sub-status' -and $ms1 -match 'crit-list')
+  $ms9 = curl.exe -s -b "$PWD\_ck9.txt" "http://localhost:8099/mysub/$scnTid"
+  Chk 'no submission empty state' ($ms9 -match 'mysub-empty')
+  $msf = curl.exe -s -i -b "$PWD\_ck.txt" "http://localhost:8099/mysubfile/${scnTid}__s1/v2/firmware"
+  Chk 'my sub file download' ($msf -match ' 200 ')
+  $rd = curl.exe -s -i -b "$PWD\_ck.txt" -F "task=$scnTid" -F 'calc=redirect test' -F 'brigade=TEST-TEAM' 'http://localhost:8099/api/submit'
+  Chk 'submit redirects to my sub' ($rd -match 'Location: /mysub/')
+  $ms2 = curl.exe -s -b "$PWD\_ck2.txt" "http://localhost:8099/mysub/$scnTid"
+  Chk 'brigade member sees report status' ($ms2 -match 'sub-status')
 
   # ---- revoke issue ----
   $rv0 = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/task/$scnTid"

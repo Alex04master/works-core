@@ -622,6 +622,20 @@ class Core:
     def sub(self, task_id, student_id):
         return self.db["сдачи"].get(f"{task_id}__{student_id}")
 
+    def sub_for(self, task_id, student_id):
+        """Сдача студента: его личная или отчёт его бригады."""
+        sub = self.sub(task_id, student_id)
+        if sub:
+            return sub
+        s = self.student(student_id)
+        brg = (s.get("бригада", "") or "").strip() if s else ""
+        if not brg:
+            return None
+        for x in self.db.get("сдачи", {}).values():
+            if x.get("task") == task_id and x.get("бригада") == brg:
+                return x
+        return None
+
     def latest(self, sub):
         return (sub.get("versions") or [{}])[-1]
 
