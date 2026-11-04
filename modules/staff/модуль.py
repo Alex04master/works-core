@@ -18,6 +18,63 @@ def register(ctx):
             parts = []
         return "".join(str(p) for p in parts if p)
 
+    # ── Очередь проверки ─────────────────────────────────────────────
+    def _pending_queue():
+        """Сдачи, у которых последняя версия ещё без вердикта."""
+        items = []
+        for s in ctx.list_submissions():
+            vers = s.get("versions") or []
+            if not vers or vers[-1].get("verdict"):
+                continue
+            t = ctx.get_task(s.get("task", ""))
+            if not t:
+                continue
+            les = ctx.get_lesson(t.get("lesson", ""))
+            course = ctx.get_course(les.get("course", "")) if les else None
+            brig = (s.get("бригада") or "").strip()
+            if brig:
+                who = "👥 " + brig
+            else:
+                st = ctx.get_student(s.get("student", ""))
+                who = st["fio"] if st else "?"
+            items.append({
+                "key": s.get("key", ""),
+                "task": t.get("title", ""),
+                "course": (course or {}).get("title", ""),
+                "who": who,
+                "time": str(vers[-1].get("time") or ""),
+                "late": bool(vers[-1].get("просрочено")),
+            })
+        items.sort(key=lambda d: d["time"], reverse=True)
+        return items
+
+    def _queue_html():
+        items = _pending_queue()
+        if not items:
+            return ""
+        n = len(items)
+        rows = ""
+        for it in items[:10]:
+            rows += (
+                '<tr><td>%s%s</td><td>%s%s</td><td>%s</td>'
+                '<td><a class="btn btn-sm" href="/staff/sub/%s">'
+                'Проверить</a></td></tr>'
+            ) % (_e(it["who"]), " ⏰" if it["late"] else "",
+                 _e(it["task"]),
+                 ('<div class="reason">%s</div>' % _e(it["course"]))
+                 if it["course"] else "",
+                 _e(it["time"]), _e(it["key"]))
+        more = ""
+        if n > 10:
+            more = ('<p class="hint">Показаны последние 10, всего '
+                    'не проверено: %d.</p>') % n
+        return (
+            '<div class="staff-card queue-card">'
+            '<h2>⚠️ Требуют проверки: %d</h2>'
+            '<table class="staff-table">'
+            '<tr><th>Кто сдал</th><th>Задание</th><th>Когда</th>'
+            '<th></th></tr>%s</table>%s</div>') % (n, rows, more)
+
     # ── ГЛАВНАЯ ─────────────────────────────────────────────────────
     @ctx.add_route("GET", "/staff", access="staff")
     def staff_home(handler, params):
@@ -81,10 +138,10 @@ def register(ctx):
             'placeholder="Иванов И.И.&#10;Петров П.П."></textarea></label></p>'
             '<p><button>Импортировать</button></p></form></details>'
         ) % course_opts
-        body = ('%s<div class="staff-grid">%s</div>%s%s%s'
+        body = ('%s<div class="staff-grid">%s</div>%s%s%s%s'
                 '<p class="hint"><a href="/staff/password">🔑 Сменить пароль</a>'
                 ' · <a href="/staff/scenarios">🎬 Сценарии</a></p>'
-                ) % (err_msg, cards, new_form, import_card,
+                ) % (err_msg, cards, _queue_html(), new_form, import_card,
                      _extra_cards("staff.home_cards"))
         return _page(ctx, "Панель преподавателя", body)
 

@@ -336,6 +336,22 @@ try {
   Chk 'course import redirects' ($ri -match 'Location: /staff/course/')
   python -X utf8 tests\_chk_pkgimp.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   imported course complete' } else { Write-Output 'FAIL imported course'; $script:fail++ }
+
+  # ---- review queue: pending submissions on staff panel ----
+  curl.exe -s -c "$PWD\_ck3.txt" -d 'student=s3' -d 'next=/' 'http://localhost:8099/_login' | Out-Null
+  curl.exe -s -b "$PWD\_ck3.txt" -F 'task=t1' -F 'width=2' -F 'length=3' -F 'height=1' -F 'detector_type=IP212' -F 'detectors_num=2' -F 'loops=1' -F 'justification=queue-test' 'http://localhost:8099/api/submit' | Out-Null
+  $q1 = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/staff'
+  Chk 'queue card shows pending' ($q1 -match 'queue-card')
+  Chk 'queue links to sub' ($q1 -match '/staff/sub/t1__s3')
+  curl.exe -s -b "$PWD\_staff.txt" -d 'key=t1__s3' -d 'verdict=Accepted' -d 'score=50' -d 'comment=ok' 'http://localhost:8099/staff/verdict' | Out-Null
+  $q2 = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/staff'
+  Chk 'queue cleared after verdict' ($q2 -notmatch '/staff/sub/t1__s3')
+
+  # ---- backup module: card + zip download + auto copy at start ----
+  Chk 'backup card on panel' ($q2 -match '/staff/backup')
+  curl.exe -s -o "$PWD\_bak.zip" -b "$PWD\_staff.txt" 'http://localhost:8099/staff/backup'
+  python -X utf8 tests\_chk_backup.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   backup zip + auto copy' } else { Write-Output 'FAIL backup'; $script:fail++ }
 } finally {
   Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 }

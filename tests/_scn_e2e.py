@@ -143,6 +143,9 @@ try:
         "mx-tbl" in lmx and "mx-sent" in lmx)
     ms0 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/mysub/%s" % tid)
     chk("my sub page renders", "sub-status" in ms0)
+    sq = curl("-b", "_e2e_staff.txt", "http://localhost:8093/staff")
+    chk("queue: pending submission listed",
+        "queue-card" in sq and "/staff/sub/%s__s1" % tid in sq)
     tpf = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
     chk("form prefilled with previous answers",
         "расчёт готов" in tpf and "&quot;smoke&quot;" in tpf)
@@ -201,6 +204,9 @@ try:
     chk("task page links to my sub", "/mysub/" in tpv)
     ms2 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/mysub/%s" % tid)
     chk("my sub page: criteria shown", "crit-list" in ms2)
+    sq2 = curl("-b", "_e2e_staff.txt", "http://localhost:8093/staff")
+    chk("queue: cleared after verdict",
+        "/staff/sub/%s__s1" % tid not in sq2)
     mf = curl("-i", "-b", "_e2e_s1.txt",
               "http://localhost:8093/mysubfile/%s__s1/v1/firmware" % tid)
     chk("my sub file download", mf.startswith("HTTP/1.0 200"))
@@ -253,6 +259,16 @@ try:
     vdir = os.path.join("_scntest", "сдачи", sub2[0]["key"], "v1")
     chk("imported: submission files copied",
         any(f.startswith("firmware") for f in os.listdir(vdir)))
+
+    curl("-o", "_e2e_bak.zip", "-b", "_e2e_staff.txt",
+         "http://localhost:8093/staff/backup")
+    zbn = zipfile.ZipFile("_e2e_bak.zip").namelist()
+    chk("backup zip: registry + submissions",
+        "реестр.json" in zbn and any(n.startswith("сдачи/") for n in zbn))
+    chk("backup zip: no backup dir inside",
+        not any(n.startswith("бэкап/") for n in zbn))
+    auto = glob.glob(os.path.join("_scntest", "бэкап", "*.zip"))
+    chk("backup auto copy at start", 1 <= len(auto) <= 3)
 
     lf = glob.glob("_scntest/лог/*.jsonl")
     chk("audit log written", bool(lf))
