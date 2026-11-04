@@ -252,9 +252,13 @@ try {
   # ---- shlei table ----
   $tp5 = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
   Chk 'shlei table on task page' ($tp5 -match 'shlei-tbl' -and $tp5 -match 'name="loops"')
-  curl.exe -s -b "$PWD\_ck.txt" -F "task=$scnTid" -F 'calc=ok' -F 'loops=<tests\_loops.json' 'http://localhost:8099/api/submit' | Out-Null
+  curl.exe -s -b "$PWD\_ck.txt" -F "task=$scnTid" -F 'calc=ok' -F 'loops=<tests\_loops.json' -F 'firmware=@tests\_fw1.bin' -F 'firmware=@tests\_fw2.bin' 'http://localhost:8099/api/submit' | Out-Null
   python -X utf8 tests\_chk_loops.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   shlei data stored' } else { Write-Output 'FAIL shlei data stored'; $script:fail++ }
+  python -X utf8 tests\_chk_fw.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   firmware files stored' } else { Write-Output 'FAIL firmware files stored'; $script:fail++ }
+  $sp6 = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/sub/${scnTid}__s1"
+  Chk 'sub page shows firmware files' ($sp6 -match 'firmware-2')
   $sp5 = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/sub/${scnTid}__s1"
   Chk 'sub page renders shlei table' ($sp5 -match 'shlei-view')
 

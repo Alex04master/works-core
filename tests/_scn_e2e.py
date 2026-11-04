@@ -62,9 +62,9 @@ try:
     chk("6 tasks", len(tasks) == 6)
     t0 = tasks[0]
     form = {f["ключ"]: f["тип"] for f in t0["форма"]}
-    chk("form: plan_data + loops + calc (no file)",
+    chk("form: plan_data + loops + firmware + calc (no file)",
         form.get("plan_data") == "hidden" and form.get("calc") == "textarea"
-        and form.get("loops") == "shlei"
+        and form.get("loops") == "shlei" and form.get("firmware") == "firmware"
         and "plan" not in form and "plan_photo" not in form)
     chk("task settings plan id", t0.get("настройки", {}).get("план") == "СЦ-01")
     mats = les[0].get("материалы") or []
@@ -115,6 +115,8 @@ try:
          "-F", "task=%s" % tid, "-F", "calc=расчёт готов",
          "-F", 'plan_data=[{"t":"smoke","x":3,"y":2.5},{"t":"ipr","x":0.8,"y":6.2}]',
          "-F", 'loops=<tests/_loops.json',
+         "-F", "firmware=@tests/_fw1.bin",
+         "-F", "firmware=@tests/_fw2.bin",
          "http://localhost:8093/api/submit")
     files = [f for f in glob.glob("_scntest/*.json")
              if not os.path.basename(f).startswith("_")]
@@ -125,6 +127,10 @@ try:
     loops = json.loads(ver["answers"]["loops"])
     chk("loops stored in version",
         isinstance(loops, list) and loops[0].get("cnt") == "3")
+    fl = ver.get("files", {})
+    chk("firmware files saved (2)",
+        "firmware" in fl and "firmware-2" in fl
+        and fl["firmware"]["имя"].endswith(".bin"))
 
     # преподаватель: сводка + просмотр плана
     sp = curl("-b", "_e2e_staff.txt",
@@ -132,6 +138,7 @@ try:
     chk("sub page: plan summary + view link",
         "Смотреть план" in sp and "/plan/" in sp)
     chk("sub page: shlei table view", "shlei-view" in sp)
+    chk("sub page: firmware files listed", "firmware-2" in sp)
     pv = curl("-b", "_e2e_staff.txt",
               "http://localhost:8093/plan/%s?sub=%s__s1&v=1" % (tid, tid))
     chk("teacher plan view read-only",

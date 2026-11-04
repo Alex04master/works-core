@@ -264,6 +264,19 @@ def _render_field(fd, value=""):
                      f'value="{_e(o)}"{chk}> {_e(o)}</label>')
         return f'<div class="field field-checkboxes"><span class="field-label">{_e(label)}{star}</span>{opts}</div>'
 
+    if typ == "firmware":
+        try:
+            lim = int(fd.get("лимит", 5) or 5)
+        except (TypeError, ValueError):
+            lim = 5
+        lim = max(1, min(lim, 10))
+        inputs = "".join(
+            f'<input type="file" name="{_e(key)}" style="margin:4px 0">'
+            for _ in range(lim))
+        hint = "прикрепите до %d файлов" % lim
+        return (f'<div class="field"><span class="field-label">{_e(label)}'
+                f'{star}</span><p class="hint">{_e(hint)}</p>{inputs}</div>')
+
     if typ == "file":
         accept = fd.get("accept", "")
         acc = f' accept="{accept}"' if accept else ''
@@ -420,6 +433,20 @@ class Core:
                 elif fd.get("обязательно"):
                     errors.append("%s: обязательное поле" % fd.get("вопрос", key))
                 continue
+            if fd.get("тип") == "firmware":
+                try:
+                    lim = int(fd.get("лимит", 5) or 5)
+                except (TypeError, ValueError):
+                    lim = 5
+                ups = files.get(key)
+                if _is_upload(ups):
+                    ups = [ups]
+                ups = [u for u in (ups or []) if _is_upload(u) and u.data]
+                if ups:
+                    uploads[key] = ups[:max(1, lim)]
+                elif fd.get("обязательно"):
+                    errors.append("%s: обязательное поле" % fd.get("вопрос", key))
+                continue
             val, err = _parse_field(fd, answers.get(key))
             if err:
                 errors.append("%s: %s" % (fd.get("вопрос", key), err))
@@ -447,19 +474,22 @@ class Core:
                 if s.get("бригада", "") == brigade})
         n = len(sub["versions"]) + 1
 
-        # Файлы — на диск в данные/сдачи
+        # Файлы — на диск в данные/сдачи (список = несколько файлов)
         saved_files = {}
         for fkey, up in uploads.items():
-            vdir = os.path.join(self.store.subs, key, f"v{n}")
-            os.makedirs(vdir, exist_ok=True)
-            fname = f"{fkey}__{_safe_name(up.name)}"
-            with open(os.path.join(vdir, fname), "wb") as f:
-                f.write(up.data)
-            saved_files[fkey] = {
-                "имя": up.name,
-                "файл": f"{key}/v{n}/{fname}".replace("\\", "/"),
-                "размер": len(up.data),
-            }
+            upl = up if isinstance(up, list) else [up]
+            for idx, u in enumerate(upl):
+                vdir = os.path.join(self.store.subs, key, f"v{n}")
+                os.makedirs(vdir, exist_ok=True)
+                base = fkey if idx == 0 else "%s-%d" % (fkey, idx + 1)
+                fname = f"{base}__{_safe_name(u.name)}"
+                with open(os.path.join(vdir, fname), "wb") as f:
+                    f.write(u.data)
+                saved_files[base] = {
+                    "имя": u.name,
+                    "файл": f"{key}/v{n}/{fname}".replace("\\", "/"),
+                    "размер": len(u.data),
+                }
 
         ver = {
             "n": n,

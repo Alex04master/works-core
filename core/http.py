@@ -105,7 +105,14 @@ def _parse_multipart(body, boundary):
             continue
         fname = _cd_param(disp, "filename")
         if fname:
-            files[name] = Upload(fname, content)
+            up = Upload(fname, content)
+            prev = files.get(name)
+            if prev is None:
+                files[name] = up
+            elif isinstance(prev, list):
+                prev.append(up)
+            else:
+                files[name] = [prev, up]
         else:
             val = content.decode("utf-8", "replace")
             prev = fields.get(name)
@@ -1070,7 +1077,11 @@ class WorksServer(http.server.ThreadingHTTPServer):
             for k, v in data.items():
                 if k in ("task", "submit"):
                     continue
-                if hasattr(v, "data") and hasattr(v, "name"):
+                if (isinstance(v, list) and v
+                        and all(hasattr(x, "data") and hasattr(x, "name")
+                                for x in v)):
+                    files[k] = v          # несколько файлов (firmware)
+                elif hasattr(v, "data") and hasattr(v, "name"):
                     files[k] = v          # загруженный файл
                 elif k == "brigade":
                     brigade = (v or "").strip()

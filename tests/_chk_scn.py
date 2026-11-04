@@ -11,6 +11,7 @@ assert len(tasks) == 2, len(tasks)
 form = {f["ключ"]: f["тип"] for f in tasks[0]["форма"]}
 assert form.get("plan_data") == "hidden" and form.get("calc") == "textarea", form
 assert form.get("loops") == "shlei", form
+assert form.get("firmware") == "firmware", form
 assert "plan_photo" not in form and "plan" not in form, form
 loops_f = [f for f in tasks[0]["форма"] if f.get("ключ") == "loops"][0]
 assert loops_f.get("строк") == 10, loops_f
