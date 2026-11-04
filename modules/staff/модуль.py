@@ -337,7 +337,7 @@ def register(ctx):
         issue_head = ('<tr><th>Задание</th>'
                       + "".join('<th title="состав см. в студентах">👥 %s</th>'
                                 % _e(b) for b in brigades)
-                      + '<th>Всем</th></tr>')
+                      + '<th>Всем</th><th>Снять</th></tr>')
         issue_rows = ""
         for t in tasks:
             issued = set(t.get("выдано")) if isinstance(t.get("выдано"),
@@ -355,11 +355,18 @@ def register(ctx):
                     % (_e(t["id"]),
                        " checked" if isinstance(t.get("выдано"), list)
                        and not t.get("выдано") else ""))
+            off_cell = ('<td style="text-align:center">'
+                        '<a class="btn-sm btn-secondary" '
+                        'href="/staff/task_off?task=%s&amp;back=%s" '
+                        'onclick="return confirm(&quot;Снять выдачу?&quot;)">'
+                        '🚫</a></td>'
+                        ) % (_e(t["id"]), _e("/staff/lesson/" + lid))
             wait_mark = ("⏳ " if t.get("выдано") is None
                          and (t.get("настройки") or {}).get("план") else "")
-            issue_rows += ('<tr><td>%s<a href="/staff/task/%s">%s</a></td>%s%s</tr>'
+            issue_rows += ('<tr><td>%s<a href="/staff/task/%s">%s</a></td>'
+                           '%s%s%s</tr>'
                            % (wait_mark, _e(t["id"]), _e(t.get("title", "")),
-                              cells, allc))
+                              cells, allc, off_cell))
         issue_card = ""
         if tasks:
             issue_card = (
@@ -485,19 +492,35 @@ def register(ctx):
         elif not issued_set:
             status_html = '<p class="hint">✅ Выдано всем студентам курса.</p>'
         else:
-            status_html = ('<p class="hint">Выдано бригадам: %s.</p>'
-                           % _e(", ".join(sorted(issued_set))))
+            _items = "".join(
+                '<span class="team-badge">👥 %s</span> '
+                '<a class="btn-sm btn-danger" '
+                'title="Снять выдачу этой бригаде" '
+                'href="/staff/task_off?task=%(tid)s&amp;back=%(back)s'
+                '&amp;brigade=%(b)s" '
+                'onclick="return confirm(&quot;Снять выдачу?&quot;)">✕</a> '
+                % {"tid": _e(tid), "back": _e("/staff/task/" + tid),
+                   "b": _e(b)}
+                for b in sorted(issued_set))
+            status_html = ('<p class="hint">Выдано бригадам: %s</p>' % _items)
         all_checked = " checked" if issued_set is not None and not issued_set else ""
         issue_card = (
             '<form method="post" action="/staff/task_issue" class="staff-card">'
             '<h2>📤 Выдача бригадам</h2>'
-            '%s'
-            '<p class="hint">Отметьте бригады, которым выдано задание.</p>'
-            '%s'
-            '<p><label class="cb-label"><input type="checkbox" name="all"%s> '
-            'Выдать всем</label></p>'
-            '<p><button>Сохранить выдачу</button></p></form>'
-        ) % (status_html, brig_rows, all_checked)
+            '%(status)s'
+            '<p class="hint">Отметьте бригады, которым выдано задание. '
+            'Снять выдачу — кнопкой ниже или ✕ у бригады.</p>'
+            '%(brig)s'
+            '<p><label class="cb-label"><input type="checkbox" name="all"'
+            '%(allc)s> Выдать всем</label></p>'
+            '<p><button>Сохранить выдачу</button> '
+            '<a class="btn btn-secondary" '
+            'href="/staff/task_off?task=%(tid)s&amp;back=%(back)s" '
+            'onclick="return confirm(&quot;Снять выдачу полностью? Задание '
+            'снова будет скрыто от студентов.&quot;)">🚫 Снять выдачу</a></p>'
+            '</form>'
+        ) % {"status": status_html, "brig": brig_rows, "allc": all_checked,
+             "tid": _e(tid), "back": _e("/staff/task/" + tid)}
         body = (
             '<p><a href="/staff/lesson/%s">%s</a></p>'
             '<div class="staff-card">'
@@ -783,6 +806,26 @@ def register(ctx):
                 brs = [brs]
             ctx.task_set_issue(tid, brs)
         handler._redirect("/staff/task/%s" % _e(tid))
+        return handler._SENT
+
+    # ── Снять выдачу задания ─────────────────────────────────────────
+    @ctx.add_route("GET", "/staff/task_off", access="staff")
+    def task_off(handler, params):
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        tid = (qs.get("task") or [""])[0]
+        task = ctx.get_task(tid)
+        if not task:
+            handler._redirect("/staff")
+            return handler._SENT
+        back = (qs.get("back") or [""])[0] or "/staff/task/%s" % _e(tid)
+        brig = (qs.get("brigade") or [""])[0].strip()
+        issued = task.get("выдано")
+        if brig and isinstance(issued, list) and brig in issued:
+            issued = [b for b in issued if b != brig]
+            ctx.task_set_issue(tid, issued if issued else None)
+        else:
+            ctx.task_set_issue(tid, None)  # задание снова ждёт выдачи
+        handler._redirect(back)
         return handler._SENT
 
     # ── Редактирование бригад ────────────────────────────────────────

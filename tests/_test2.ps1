@@ -255,6 +255,23 @@ try {
   $sp5 = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/sub/${scnTid}__s1"
   Chk 'sub page renders shlei table' ($sp5 -match 'shlei-view')
 
+  # ---- revoke issue ----
+  $rv0 = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/task/$scnTid"
+  Chk 'revoke buttons on task page' ($rv0 -match 'task_off')
+  $rvM = curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/lesson/$scnLid"
+  Chk 'matrix has revoke column' ($rvM -match 'task_off')
+  curl.exe -s -b "$PWD\_staff.txt" -d "task=$scnTid" -d 'brigade=TEST-TEAM' 'http://localhost:8099/staff/task_issue' | Out-Null
+  $rv1 = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
+  Chk 'issued before revoke' ($rv1 -match 'task-form')
+  curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/task_off?task=$scnTid&brigade=TEST-TEAM&back=/staff/task/$scnTid" | Out-Null
+  $rv2 = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
+  Chk 'revoke per brigade works' ($rv2 -notmatch 'task-form')
+  curl.exe -s -b "$PWD\_staff.txt" -d "task=$scnTid" -d 'all=on' 'http://localhost:8099/staff/task_issue' | Out-Null
+  curl.exe -s -b "$PWD\_staff.txt" "http://localhost:8099/staff/task_off?task=$scnTid&back=/staff/task/$scnTid" | Out-Null
+  $rv3 = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
+  Chk 'full revoke works' ($rv3 -notmatch 'task-form')
+  curl.exe -s -b "$PWD\_staff.txt" -d "task=$scnTid" -d 'all=on' 'http://localhost:8099/staff/task_issue' | Out-Null
+
 } finally {
   Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 }

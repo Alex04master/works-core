@@ -188,6 +188,15 @@ try:
          "http://localhost:8093/staff/task_issue")
     tp3 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
     chk("issue-all restores visibility", "task-form" in tp3)
+
+    # снятие выдачи
+    curl("-b", "_e2e_staff.txt",
+         "http://localhost:8093/staff/task_off?task=%s&back=/staff/task/%s"
+         % (tid, tid))
+    tp4 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
+    chk("revoke hides task again", "task-form" not in tp4)
+    curl("-b", "_e2e_staff.txt", "-d", "task=%s" % tid, "-d", "all=on",
+         "http://localhost:8093/staff/task_issue")
 finally:
     proc.terminate()
     try:
