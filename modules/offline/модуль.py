@@ -1,0 +1,1043 @@
+# -*- coding: utf-8 -*-
+"""Модуль «Офлайн-сдача»: бланк задания → работа дома → загрузка в систему.
+
+Как работает:
+- На странице задания появляется ссылка «⬇️ Бланк для офлайн-сдачи».
+  Бланк — автономный HTML: описание и форма задания, ФИО/группа уже вписаны
+  и подписаны HMAC-подписью (как кука студента).
+- Студент заполняет бланк в браузере, прикладывает файлы, жмёт
+  «💾 Сохранить работу» — получает файл работы (.json).
+- В СДО: страница «📥 Офлайн-сдача» — студент загружает файл(ы), система
+  распознаёт его по подписи и создаёт обычную сдачу (новую версию).
+- Преподаватель: /staff/offline — импорт пачки работ за раз; работы
+  распознаются по подписи/ФИО, спорные — выбором студента из списка.
+  Там же — скачивание бланков всех заданий занятия одним .zip.
+
+Маршруты:
+    GET  /offline/blank/<tid>          — бланк задания
+    GET  /offline/                     — загрузка работы (студент)
+    POST /offline/upload               — загрузка работы (студент)
+    GET  /staff/offline                — импорт пачки (преподаватель)
+    POST /staff/offline/import         — импорт пачки
+    POST /staff/offline/manual         — зачесть нераспознанные / отменить
+    GET  /staff/offline/blanks/<lid>   — бланки заданий занятия (.zip)
+
+Файл работы:
+    {"формат": "works-core-работа", "версия": 1, "задание": "t1", …,
+     "студент": {"sid":…, "подпись":…, "fio":…, "группа":…, "бригада":…},
+     "ответы": {…}, "файлы": {ключ: [{"имя":…, "b64":…}]}}
+"""
+import base64
+import html as _html
+import io
+import json
+import re
+import secrets
+import time
+import zipfile
+from datetime import datetime
+
+FMT = "works-core-работа"
+VER = 1
+MAX_ATTACH = 8 * 1024 * 1024     # вложения одной работы (в данных)
+MAX_BATCH = 20 * 1024 * 1024     # пачка отложенного импорта
+PENDING_TTL = 24 * 3600
+
+
+# ── Вспомогательные ──────────────────────────────────────────────────────
+
+def _e(v):
+    return _html.escape(str(v) if v is not None else "", quote=True)
+
+
+def _norm_fio(s):
+    return re.sub(r"\s+", " ", str(s or "").strip()).lower()
+
+
+def _safefn(s):
+    base = re.sub(r'[\\/:*?"<>|]+', "_", str(s or "")).strip()
+    base = re.sub(r"\s+", "_", base)[:60]
+    return base or "file"
+
+
+def _parse_dl(value):
+    v = str(value or "").strip().replace("T", " ")
+    if not v:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d",
+                "%d.%m.%Y %H:%M", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(v, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+class _Up:
+    """Загруженный файл (совместим с ядром: .name и .data)."""
+
+    def __init__(self, name, data):
+        self.name = name
+        self.data = data
+
+
+class _Manual(Exception):
+    """Работа без подписи и неоднозначным ФИО — нужен выбор студента."""
+
+
+def _md(text):
+    """Мини-Markdown -> HTML (вход экранируется)."""
+    if not text:
+        return ""
+    esc = _html.escape(str(text), quote=False)
+
+    def inline(s):
+        s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+        s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
+        s = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<em>\1</em>", s)
+        return s
+
+    out = []
+    lst = None
+
+    def close():
+        nonlocal lst
+        if lst:
+            out.append("</%s>" % lst)
+            lst = None
+
+    for raw in esc.split("\n"):
+        s = raw.strip()
+        if not s:
+            close()
+            continue
+        m = re.match(r"^(#{1,6})\s+(.*)$", s)
+        if m:
+            close()
+            lvl = 2 if len(m.group(1)) < 3 else 3
+            out.append("<h%d>%s</h%d>" % (lvl, inline(m.group(2)), lvl))
+            continue
+        m = re.match(r"^[-*]\s+(.*)$", s)
+        if m:
+            if lst != "ul":
+                close()
+                lst = "ul"
+                out.append("<ul>")
+            out.append("<li>%s</li>" % inline(m.group(1)))
+            continue
+        m = re.match(r"^\d+[.)]\s+(.*)$", s)
+        if m:
+            if lst != "ol":
+                close()
+                lst = "ol"
+                out.append("<ol>")
+            out.append("<li>%s</li>" % inline(m.group(1)))
+            continue
+        close()
+        out.append("<p>%s</p>" % inline(s))
+    close()
+    return "\n".join(out)
+
+
+def _as_uploads(v):
+    """Список Upload из поля формы (одно имя — несколько файлов).
+
+    Проверка по duck-typing (как в ядре): handler._parse_post() отдаёт
+    экземпляры core.http.Upload — это чужой для модуля класс, isinstance
+    по _Up отфильтровал бы все файлы.
+    """
+    if v is None:
+        return []
+    if isinstance(v, list):
+        return [x for x in v if hasattr(x, "data") and hasattr(x, "name") and x.data]
+    return [v] if (hasattr(v, "data") and hasattr(v, "name") and v.data) else []
+
+
+# ── Бланк задания ────────────────────────────────────────────────────────
+
+BLANK_CSS = """
+*{box-sizing:border-box}
+body{font:15px/1.55 'Segoe UI',Tahoma,sans-serif;color:#2c3e50;max-width:860px;margin:0 auto;padding:16px}
+h1{font-size:21px;color:#1e3a5f;margin:6px 0 4px}
+h2{font-size:17px;color:#1e3a5f;border-bottom:2px solid #e3e8ef;padding-bottom:4px;margin-top:22px}
+.meta{background:#f4f7fb;border:1px solid #dbe4ef;border-radius:10px;padding:10px 14px;font-size:14px;margin:10px 0}
+.meta b{color:#1e3a5f}
+.muted{color:#8a97a8}
+.warn{background:#fef9c3;border-left:4px solid #eab308;padding:8px 12px;border-radius:0 8px 8px 0;margin:10px 0}
+.desc{border:1px solid #e3e8ef;border-radius:10px;padding:4px 16px 10px;background:#fff}
+.desc h2{border:none}
+.fld{margin:12px 0}
+.fld>label,.fld-llabel{display:block;font-weight:600;margin-bottom:4px}
+.req{color:#dc2626}
+input[type=text],input[type=number],input[type=date],input[type=email],input[type=tel],
+select,textarea{width:100%;padding:7px 9px;border:1px solid #cfd8e3;border-radius:8px;font:inherit}
+textarea{resize:vertical}
+.fld-sep{font-weight:700;color:#1e3a5f;background:#eef2f7;border-radius:8px;padding:7px 10px;margin:16px 0 6px}
+.opt{display:block;margin:4px 0}
+.opt input{width:auto;margin-right:6px}
+table.sl{border-collapse:collapse;width:100%;font-size:13.5px}
+table.sl th,table.sl td{border:1px solid #cfd8e3;padding:3px}
+table.sl th{background:#eef2f7;font-weight:600}
+table.sl input{width:100%;border:none;padding:5px 7px;font:inherit}
+.filebox{border:2px dashed #b6c2d2;border-radius:10px;padding:12px}
+.filebox input{width:100%}
+.savebar{position:sticky;bottom:0;background:#fff;border-top:2px solid #e3e8ef;padding:12px 0;margin-top:18px}
+button.big{background:#2563eb;color:#fff;border:none;border-radius:10px;padding:11px 22px;font-size:16px;font-weight:600;cursor:pointer}
+button.big:hover{background:#1e56d0}
+#svmsg{margin-left:12px;color:#0f766e;font-weight:600}
+footer{margin-top:26px;color:#8a97a8;font-size:12.5px;border-top:1px solid #e3e8ef;padding-top:8px}
+@media print{.savebar,.noprint{display:none}body{max-width:none}}
+"""
+
+
+def _field_html(fd):
+    """HTML одного поля бланка (по типам ядра)."""
+    typ = fd.get("тип", "text")
+    key = fd.get("ключ", "")
+    label = fd.get("вопрос") or fd.get("подсказка") or key
+    req = "1" if fd.get("обязательно") else ""
+
+    def lab():
+        return ('<label class="fld-llabel">%s%s</label>'
+                % (_e(label), ' <span class="req">*</span>' if req else ""))
+
+    if typ == "static":
+        return '<div class="fld-sep">%s</div>' % _e(fd.get("подсказка") or label)
+    if typ == "hidden":
+        return ""
+    if typ == "textarea":
+        rows = min(max(int(fd.get("строк", 4) or 4), 1), 20)
+        ph = ' placeholder="%s"' % _e(fd.get("место")) if fd.get("место") else ""
+        return ('<div class="fld">%s<textarea data-key="%s" data-type="textarea" '
+                'data-req="%s" rows="%d"%s></textarea></div>'
+                % (lab(), _e(key), req, rows, ph))
+    if typ == "select":
+        opts = ['<option value="">— выберите —</option>']
+        for o in (fd.get("варианты") or []):
+            opts.append('<option value="%s">%s</option>' % (_e(o), _e(o)))
+        return ('<div class="fld">%s<select data-key="%s" data-type="select" '
+                'data-req="%s">%s</select></div>'
+                % (lab(), _e(key), req, "".join(opts)))
+    if typ == "radio":
+        ins = []
+        for o in (fd.get("варианты") or []):
+            ins.append('<label class="opt"><input type="radio" data-key="%s" '
+                       'data-type="radio" data-req="%s" name="%s" value="%s">%s</label>'
+                       % (_e(key), req, _e(key), _e(o), _e(o)))
+        return '<div class="fld">%s%s</div>' % (lab(), "".join(ins))
+    if typ == "checkboxes":
+        ins = []
+        for o in (fd.get("варианты") or []):
+            ins.append('<label class="opt"><input type="checkbox" data-key="%s" '
+                       'data-type="checkboxes" data-req="%s" name="%s" value="%s">%s</label>'
+                       % (_e(key), req, _e(key), _e(o), _e(o)))
+        return '<div class="fld">%s%s</div>' % (lab(), "".join(ins))
+    if typ == "checkbox":
+        return ('<div class="fld"><label class="opt"><input type="checkbox" '
+                'data-key="%s" data-type="checkbox" data-req="%s" value="on">'
+                '%s%s</label></div>'
+                % (_e(key), req, _e(label), ' <span class="req">*</span>' if req else ""))
+    if typ == "file":
+        acc = ' accept="%s"' % _e(fd.get("accept")) if fd.get("accept") else ""
+        return ('<div class="fld">%s<div class="filebox">'
+                '<input type="file" data-key="%s" data-type="file" data-req="%s"%s>'
+                '</div></div>' % (lab(), _e(key), req, acc))
+    if typ == "firmware":
+        lim = fd.get("лимит", 5)
+        return ('<div class="fld">%s<div class="filebox">'
+                '<input type="file" multiple data-key="%s" data-type="firmware" '
+                'data-req="%s" data-limit="%s"></div>'
+                '<p class="muted">До %s файлов</p></div>'
+                % (lab(), _e(key), req, _e(lim), _e(lim)))
+    if typ == "shlei":
+        rows = min(max(int(fd.get("строк", 10) or 10), 1), 30)
+        cols = [("n", "Номер шлейфа"), ("type", "Тип"),
+                ("dev", "Установленный прибор"),
+                ("cnt", "Кол-во приборов"), ("note", "Комментарий")]
+        head = "".join("<th>%s</th>" % _e(c[1]) for c in cols)
+        trs = []
+        for i in range(rows):
+            tds = "".join('<td><input data-col="%s"></td>' % c[0] for c in cols)
+            trs.append('<tr data-row="%d">%s</tr>' % (i, tds))
+        return ('<div class="fld">%s<table class="sl" id="sl_%s" data-rows="%d" '
+                'data-key="%s" data-type="shlei" data-req="%s"><tr>%s</tr>%s</table>'
+                '</div>' % (lab(), _e(key), rows, _e(key), req, head, "".join(trs)))
+    # text / number / date / email / tel
+    it = typ if typ in ("number", "date", "email", "tel") else "text"
+    extra = ""
+    if typ == "number":
+        for p in ("мин", "макс", "шаг"):
+            if fd.get(p) is not None:
+                extra += ' %s="%s"' % ({"мин": "min", "макс": "max",
+                                        "шаг": "step"}[p], _e(fd.get(p)))
+    ph = ' placeholder="%s"' % _e(fd.get("место")) if fd.get("место") else ""
+    return ('<div class="fld">%s<input type="%s" data-key="%s" data-type="text" '
+            'data-req="%s" value=""%s%s></div>'
+            % (lab(), it, _e(key), req, extra, ph))
+
+
+BLANK_JS = """<script>
+var M=__META__,LBL=__LABELS__;
+function $$(s){return document.querySelector(s)}
+function $$all(s){return document.querySelectorAll(s)}
+function slCollect(k){
+  var t=document.getElementById('sl_'+k);
+  if(!t)return'[]';
+  var rows=t.querySelectorAll('tr[data-row]'),out=[];
+  for(var i=0;i<rows.length;i++){
+    function g(c){var el=rows[i].querySelector('[data-col="'+c+'"]');
+      return el?el.value.trim():''}
+    var r={n:g('n'),type:g('type'),dev:g('dev'),cnt:g('cnt'),note:g('note')};
+    if(r.n||r.type||r.dev||r.cnt||r.note)out.push(r);
+  }
+  return JSON.stringify(out);
+}
+function buildAnswers(){
+  var ans={},els=$$all('[data-key]');
+  for(var i=0;i<els.length;i++){
+    var el=els[i],k=el.getAttribute('data-key'),
+        t=el.getAttribute('data-type')||'text';
+    if(t==='checkboxes'){if(el.checked){if(!ans[k])ans[k]=[];ans[k].push(el.value)}}
+    else if(t==='checkbox'){ans[k]=el.checked?'да':''}
+    else if(t==='radio'){if(el.checked)ans[k]=el.value}
+    else if(t==='shlei'){ans[k]=slCollect(k)}
+    else if(t==='file'||t==='firmware'){/* файлы отдельно */}
+    else{ans[k]=el.value}
+  }
+  return ans;
+}
+function validate(){
+  var errs=[];
+  var seen={};
+  var els=$$all('[data-key]');
+  for(var i=0;i<els.length;i++){
+    var el=els[i],k=el.getAttribute('data-key'),
+        t=el.getAttribute('data-type')||'text';
+    if(el.getAttribute('data-req')!=='1'||seen[k])continue;seen[k]=1;
+    var bad=false;
+    if(t==='checkboxes'||t==='radio'){
+      bad=!$$('[data-key="'+k+'"][data-type="'+t+'"]:checked')}
+    else if(t==='checkbox'){bad=!el.checked}
+    else if(t==='shlei'){bad=slCollect(k)==='[]'}
+    else if(t==='file'||t==='firmware'){bad=!(el.files&&el.files.length)}
+    else{bad=!String(el.value).trim()}
+    if(bad)errs.push(LBL[k]||k);
+  }
+  return errs;
+}
+function b64(f){return new Promise(function(res,rej){
+  var r=new FileReader();
+  r.onload=function(){var s=String(r.result||''),i=s.indexOf('base64,');
+    res(i>=0?s.slice(i+7):'')};
+  r.onerror=function(){rej(new Error('не удалось прочитать '+f.name))};
+  r.readAsDataURL(f);
+})}
+function buildFiles(){
+  var out={},ps=[];
+  var els=$$all('[data-key][data-type="file"],[data-key][data-type="firmware"]');
+  for(var i=0;i<els.length;i++){
+    var el=els[i],k=el.getAttribute('data-key'),
+        t=el.getAttribute('data-type');
+    var lim=t==='firmware'?(parseInt(el.getAttribute('data-limit')||'5',10)||5):1;
+    var fs=Array.prototype.slice.call(el.files||[]).slice(0,lim);
+    if(fs.length){out[k]=[];(function(k2,fs2){
+      ps.push(Promise.all(fs2.map(b64)).then(function(arr){
+        for(var j=0;j<arr.length;j++)out[k2].push({имя:fs2[j].name,b64:arr[j]});
+      }))})(k,fs)}
+  }
+  return Promise.all(ps).then(function(){return out});
+}
+function safefn(s){return String(s||'').replace(/[\\\\/:*?"<>|]+/g,'_')
+  .replace(/\\s+/g,'_').slice(0,60)}
+function idv(id){var el=document.getElementById(id);return el?el.value.trim():''}
+function save(){
+  var errs=validate();
+  if(errs.length){alert('Заполните обязательные поля:\\n- '+errs.join('\\n- '));return}
+  var stu={fio:M.sid?M.fio:idv('bf_fio'),
+           группа:M.sid?M.group:idv('bf_group'),
+           бригада:M.sid?M.brigade:idv('bf_brig')};
+  if(M.sid){stu.sid=M.sid;stu.подпись=M.sig}
+  if(!stu.fio){alert('Впишите ФИО в шапке бланка.');return}
+  buildFiles().then(function(files){
+    var p={формат:FMT_WC,версия:1,задание:M.tid,курс:M.cid,занятие:M.lid,
+      студент:stu,когда:new Date().toISOString(),
+      примечание:idv('bf_note'),ответы:buildAnswers(),файлы:files};
+    var blob=new Blob([JSON.stringify(p)],{type:'application/json'});
+    var a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='работа_'+M.tid+'_'+safefn(stu.fio)+'.json';
+    document.body.appendChild(a);a.click();
+    setTimeout(function(){URL.revokeObjectURL(a.href);a.remove()},500);
+    var m=document.getElementById('svmsg');
+    if(m)m.textContent='Файл сохранён: '+a.download;
+  }).catch(function(e){alert('Ошибка подготовки файла: '+(e.message||e))});
+}
+var FMT_WC=__FMT__;
+</script>"""
+
+BLANK_TPL = """<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Бланк: __TITLE__</title>
+<style>__CSS__</style>
+</head>
+<body>
+<h1>Бланк задания</h1>
+<div class="meta">
+  <div><b>Задание:</b> __TITLE__</div>
+  <div><b>Курс:</b> __COURSE__ · <b>Занятие:</b> __LESSON__</div>
+  <div>__DEADLINE__</div>
+  <div>__IDENT__</div>
+</div>
+__PLANWARN__
+<div class="desc">__DESC__</div>
+<h2>Форма отчёта</h2>
+__FORM__
+<div class="fld"><label class="fld-llabel">Комментарий к сдаче (необязательно)</label>
+<textarea id="bf_note" rows="2" placeholder="Например: почему сдаю позже срока…"></textarea></div>
+<div class="savebar noprint">
+  <button type="button" class="big" onclick="save()">💾 Сохранить работу (.json)</button>
+  <span id="svmsg"></span>
+  <p class="muted" style="margin:6px 0 0">Дальше: загрузите этот файл в СДО —
+  «📥 Офлайн-сдача» в шапке сайта, или передайте преподавателю.</p>
+</div>
+<footer>Бланк сформирован СДО works-core (модуль «Офлайн-сдача»).
+Работайте offline, интернет нужен только для загрузки файла работы.</footer>
+<script>__JS__</script>
+</body>
+</html>"""
+
+
+def _build_blank(task, lesson, course, sid, signed, stu=None):
+    """Собрать HTML бланка. sid="" — анонимный бланк (поля ввода ФИО)."""
+    title = task.get("title", "")
+    settings = task.get("настройки") or {}
+    dl = _parse_dl(settings.get("срок"))
+    stu = stu or {}
+    meta = {
+        "tid": task.get("id", ""),
+        "cid": (course or {}).get("id", ""),
+        "lid": (lesson or {}).get("id", ""),
+        "title": title,
+        "course": (course or {}).get("title", ""),
+        "lesson": (lesson or {}).get("title", ""),
+        "deadline": dl.strftime("%d.%m.%Y %H:%M") if dl else "",
+        "sid": sid or "",
+        "sig": signed or "",
+        "fio": (stu.get("fio") or "") if sid else "",
+        "group": (stu.get("group") or "") if sid else "",
+        "brigade": (stu.get("бригада") or "").strip() if sid else "",
+        "plan": bool(settings.get("план")),
+    }
+    fields = []
+    labels = {}
+    for fd in task.get("форма") or []:
+        key = fd.get("ключ", "")
+        if fd.get("тип") in ("file", "firmware", "shlei", "hidden"):
+            labels[key] = fd.get("вопрос") or fd.get("подсказка") or key
+        elif fd.get("тип") == "static":
+            continue
+        else:
+            labels[key] = fd.get("вопрос") or fd.get("подсказка") or key
+        h = _field_html(fd)
+        if h:
+            fields.append(h)
+    html = (BLANK_TPL
+            .replace("__TITLE__", _e(title))
+            .replace("__COURSE__", _e(meta["course"]) or "—")
+            .replace("__LESSON__", _e(meta["lesson"]) or "—")
+            .replace("__DEADLINE__",
+                     ("<div><b>Срок сдачи:</b> %s</div>" % _e(meta["deadline"]))
+                     if meta["deadline"] else
+                     "<div class='muted'>Срок сдачи не установлен</div>")
+            .replace("__IDENT__", _ident_html(meta))
+            .replace("__PLANWARN__",
+                     ("<div class='warn'>⚠️ Это задание содержит <b>интерактивный "
+                      "план</b>. В бланке план не передаётся — расставьте "
+                      "обозначения на сайте и учтите это при сдаче.</div>")
+                     if meta["plan"] else "")
+            .replace("__DESC__", _md(task.get("описание", "")))
+            .replace("__FORM__", "".join(fields))
+            .replace("__CSS__", BLANK_CSS)
+            .replace("__JS__", (BLANK_JS
+                                .replace("__META__", json.dumps(
+                                    meta, ensure_ascii=False)
+                                    .replace("<", "\\u003c"))
+                                .replace("__LABELS__", json.dumps(
+                                    labels, ensure_ascii=False)
+                                    .replace("<", "\\u003c"))
+                                .replace("__FMT__", json.dumps(FMT))))
+            )
+    return html
+
+
+def _ident_html(meta):
+    """Блок «Работу сдал(а)» в шапке бланка."""
+    if meta["sid"]:
+        bits = ['<b>Работу сдал(а):</b> %s' % _e(meta["fio"])]
+        if meta["group"]:
+            bits.append("группа %s" % _e(meta["group"]))
+        if meta["brigade"]:
+            bits.append("бригада «%s»" % _e(meta["brigade"]))
+        bits.append('<span class="muted">— данные подтверждены системой</span>')
+        return "<div>%s</div>" % " · ".join(bits)
+    return ('<div><b>Работу сдал(а):</b> '
+            '<input type="text" id="bf_fio" placeholder="ФИО полностью" '
+            'style="width:220px"> группа <input type="text" id="bf_group" '
+            'placeholder="группа" style="width:90px"> бригада '
+            '<input type="text" id="bf_brig" placeholder="бригада (если есть)" '
+            'style="width:130px"> <span class="muted">(впишите свои данные)</span>'
+            '</div>')
+
+
+# ── Код, встраиваемый в шапку страниц ────────────────────────────────────
+
+HEAD_JS = """<script>
+document.addEventListener('DOMContentLoaded',function(){
+ try{
+  if(!document.body.classList.contains('staff')){
+    var n=document.querySelector('header.topbar nav');
+    if(n&&!n.querySelector('a[href="/offline"]')){
+      var a=document.createElement('a');a.href='/offline';
+      a.title='Загрузить работу, выполненную офлайн';
+      a.textContent='\\ud83d\\udce5 Офлайн-сдача';n.appendChild(a);
+    }
+  }
+  var m=location.pathname.match(/^\\/task\\/([^\\/?]+)/);
+  if(m&&!document.querySelector('a[href="/offline/blank/'+m[1]+'"]')){
+    var f=document.querySelector('form.task-form');
+    var d=document.createElement('div');d.className='notice';
+    d.innerHTML='<a href="/offline/blank/'+m[1]+'">\\u2b07\\ufe0f Бланк для '
+      +'офлайн-сдачи</a> — скачать задание, выполнить дома, загрузить '
+      +'файл работы.';
+    if(f&&f.parentNode)f.parentNode.insertBefore(d,f);
+    else{var main=document.getElementById('main');
+      if(main)main.appendChild(d)}
+  }
+ }catch(e){}
+});</script>"""
+
+
+def _q(params, key, dflt=""):
+    """Значение query-параметра (приходит списком)."""
+    v = params.get(key)
+    if isinstance(v, list):
+        return v[0] if v else dflt
+    return v if v else dflt
+
+
+def _rows_table(rows):
+    out = ['<table style="border-collapse:collapse;width:100%">',
+           '<tr><th style="text-align:left;border:1px solid #dbe4ef;'
+           'padding:6px 10px;background:#eef2f7">Файл</th>'
+           '<th style="text-align:left;border:1px solid #dbe4ef;padding:6px 10px;'
+           'background:#eef2f7">Результат</th></tr>']
+    for name, ok, info in rows:
+        icon = "✅" if ok else ("⏸" if ok is None else "❌")
+        cell = _e(info) if not isinstance(info, dict) else (
+            "сдано: <b>%s</b> · задание «%s» · версия %d%s" % (
+                _e(info.get("студент", "")), _e(info.get("задание", "")),
+                info.get("версия", 0),
+                " · за бригаду «%s»" % _e(info["бригада"])
+                if info.get("бригада") else ""))
+        out.append('<tr><td style="border:1px solid #dbe4ef;padding:6px 10px">%s'
+                   '</td><td style="border:1px solid #dbe4ef;padding:6px 10px">'
+                   '%s %s</td></tr>' % (_e(name), icon, cell))
+    out.append("</table>")
+    return "".join(out)
+
+
+def _course_students(ctx, cid):
+    """Студенты курса: зачисленные; если их нет — все (курс открыт)."""
+    c = ctx.get_course(cid or "")
+    sids = [x for x in ((c or {}).get("студенты") or []) if x]
+    if sids:
+        return [s for s in (ctx.get_student(x) for x in sids) if s]
+    return sorted(ctx.list_students(), key=lambda s: s.get("fio", ""))
+
+
+def _prune_pending(ctx):
+    pend = ctx.kv_load("pending", {})
+    now = time.time()
+    stale = [k for k, v in pend.items()
+             if now - (v.get("создан") or 0) > PENDING_TTL]
+    if stale:
+        for k in stale:
+            pend.pop(k, None)
+        ctx.kv_save("pending", pend)
+
+
+# ── Разбор файла работы ──────────────────────────────────────────────────
+
+def _import_one(ctx, handler, up, for_staff, current_sid):
+    """Разобрать один файл работы.
+
+    Возвращает словарь: {"ok": True, "info": …} при успехе;
+    {"ok": False, "err": текст} при отказе;
+    {"ok": False, "manual": True, payload, fio, группа, курс, задание} —
+    если работу без подписи не удалось распознать однозначно.
+    """
+    raw = up.data or b""
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return {"ok": False, "err": "файл не читается как JSON"}
+    if not isinstance(payload, dict):
+        return {"ok": False, "err": "файл не читается как JSON"}
+    if payload.get("формат") != FMT or payload.get("версия") != VER:
+        return {"ok": False,
+                "err": "не файл работы works-core (проверьте формат и версию)"}
+    tid = str(payload.get("задание") or "")
+    task = ctx.get_task(tid)
+    if not task:
+        return {"ok": False, "err": "задание «%s» не найдено" % (tid or "?")}
+    stu_in = payload.get("студент") or {}
+    try:
+        sid = _resolve_student(ctx, handler, payload, for_staff, current_sid)
+    except _Manual:
+        return {"ok": False, "manual": True, "payload": payload,
+                "fio": str(stu_in.get("fio") or "?"),
+                "группа": str(stu_in.get("group") or "?"),
+                "курс": str(payload.get("курс") or ""),
+                "задание": tid}
+    except ValueError as ex:
+        return {"ok": False, "err": str(ex)}
+    info, err = _do_submit(ctx, task, payload, sid, for_staff, handler)
+    if err:
+        return {"ok": False, "err": err}
+    return {"ok": True, "info": info}
+
+
+def _resolve_student(ctx, handler, payload, for_staff, current_sid):
+    """Определить студента по файлу работы, вернуть его sid.
+
+    Бросает _Manual (спорная работа — нужен выбор преподавателя)
+    или ValueError (отказ с текстом ошибки).
+    """
+    stu_in = payload.get("студент") or {}
+    sid = str(stu_in.get("sid") or "")
+    mac = str(stu_in.get("подпись") or "")
+    fio = _norm_fio(stu_in.get("fio"))
+    group = str(stu_in.get("group") or "").strip()
+
+    if sid:
+        # Файл подписан: подпись обязана совпадать со студентом.
+        if not mac or handler._sign_sid(sid) != sid + "." + mac:
+            raise ValueError("подпись работы не совпадает со студентом")
+        if not for_staff and sid != current_sid:
+            raise ValueError("в файле работа другого студента")
+        if not ctx.get_student(sid):
+            raise ValueError("студент «%s» не найден в системе" % sid)
+        return sid
+
+    # Анонимный файл (без подписи): распознаём по ФИО.
+    if not fio:
+        raise ValueError("в файле нет ни подписи, ни ФИО студента")
+    if not for_staff:
+        own = ctx.get_student(current_sid) or {}
+        if _norm_fio(own.get("fio")) != fio:
+            raise ValueError("в файле работа другого студента")
+        return current_sid
+
+    # Преподаватель: однозначное совпадение ФИО среди студентов курса.
+    cands = [s for s in _course_students(ctx, str(payload.get("курс") or ""))
+             if _norm_fio(s.get("fio")) == fio]
+    if group:
+        byg = [s for s in cands if str(s.get("group") or "").strip() == group]
+        if byg:
+            cands = byg
+    if len(cands) == 1:
+        return cands[0]["id"]
+    raise _Manual()
+
+
+def _do_submit(ctx, task, payload, sid, for_staff, handler):
+    """Создать сдачу из файла работы. Возвращает (info, ошибка)."""
+    stu = ctx.get_student(sid) or {}
+    answers = {}
+    for k, v in (payload.get("ответы") or {}).items():
+        if isinstance(v, list):
+            answers[str(k)] = [str(x) for x in v if str(x)]
+        elif isinstance(v, dict):
+            continue
+        else:
+            answers[str(k)] = str(v)
+
+    # Вложения: b64 → bytes (лимит на суммарный размер).
+    ftypes = {fd.get("ключ"): fd.get("тип")
+              for fd in (task.get("форма") or [])}
+    files = {}
+    total = 0
+    for key, items in (payload.get("файлы") or {}).items():
+        if not isinstance(items, list):
+            items = [items]
+        ups = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            name = str(it.get("имя") or "файл")
+            try:
+                data = base64.b64decode(str(it.get("b64") or ""))
+            except Exception:
+                return None, "вложение «%s» повреждено (base64)" % name
+            if not data:
+                continue
+            total += len(data)
+            if total > MAX_ATTACH:
+                return None, ("вложения слишком большие — больше %d МБ"
+                              % (MAX_ATTACH // (1024 * 1024)))
+            ups.append(_Up(name, data))
+        if ups:
+            files[str(key)] = ups if ftypes.get(key) == "firmware" else ups[0]
+
+    note = str(payload.get("примечание") or "")
+    when = str(payload.get("когда") or "")
+    note = ((note + " · ") if note else "") + \
+        "офлайн-сдача, файл от " + (when or "?")
+
+    # Бригада из файла принимается, только если совпадает с текущей.
+    pb = str((payload.get("студент") or {}).get("бригада") or "").strip()
+    brigade = pb if pb and pb == str(stu.get("бригада") or "").strip() else ""
+
+    sub, err = ctx.submit(task.get("id", ""), sid, answers, files, note,
+                          brigade)
+    if err or not sub:
+        return None, (err or "сдача не создана")
+    versions = sub.get("versions") or []
+    ver = versions[-1] if versions else {}
+    info = {"студент": stu.get("fio", sid), "задание": task.get("title", ""),
+            "версия": ver.get("n", len(versions)), "бригада": brigade}
+    ctx.audit("офлайн-сдача",
+              details="%s · %s · версия %s%s"
+                      % (stu.get("fio", sid), task.get("title", ""),
+                         ver.get("n", "?"),
+                         (" · бригада " + brigade) if brigade else ""),
+              who=(stu.get("fio", sid) if not for_staff else "преподаватель"),
+              handler=handler)
+    return info, ""
+
+
+# ── Регистрация модуля ───────────────────────────────────────────────────
+
+def register(ctx):
+    # ── Ссылки в шапке и на страницах заданий ────────────────────────
+    def _head(course=None, lesson=None, **kw):
+        return HEAD_JS
+
+    ctx.on("page.head", _head)
+
+    # ── Бланк задания ────────────────────────────────────────────────
+    @ctx.add_route("GET", "/offline/blank/", access="any")
+    def blank_page(handler, params):
+        tid = (params.get("_parts") or [""])[0]
+        task = ctx.get_task(tid)
+        if not task:
+            return ctx.render_page("Задание не найдено",
+                                   "<p>Такого задания нет.</p>")
+        sid = handler._student()
+        is_staff = handler._is_staff()
+        lesson = ctx.get_lesson(task.get("lesson", ""))
+        course = ctx.get_course(lesson.get("course", "")) if lesson else None
+        stu = ctx.get_student(sid) if sid else None
+        brigade = (stu.get("бригада", "") or "").strip() if stu else ""
+        if is_staff:
+            pass
+        elif sid:
+            if course and not ctx.can_access(course["id"], sid):
+                return ctx.render_page(
+                    "Нет доступа",
+                    '<p class="error">Вы не зачислены на этот курс.</p>')
+            if not ctx.task_for_brigade(task, brigade):
+                return ctx.render_page(
+                    "Задание не выдано",
+                    '<p class="error">Это задание ещё не выдано вам.</p>')
+        else:
+            if not ctx.task_for_brigade(task, ""):
+                return ctx.render_page(
+                    "Задание недоступно",
+                    '<p class="error">Войдите на сайт как студент — бланк '
+                    'доступен только для открытых заданий.</p>')
+        # В бланк кладём «голый» MAC-хвост подписи (без 'sid.'),
+        # ровно то, что ждёт _resolve_student при проверке файла работы.
+        signed = handler._sign_sid(sid) if sid else ""
+        mac = signed.split(".", 1)[1] if signed else ""
+        html = _build_blank(task, lesson, course, sid or "", mac, stu or {})
+        handler._send_html(html)
+        return handler._SENT
+
+    # ── Страница студента: загрузка работы ───────────────────────────
+    def _student_body(stu, err_html):
+        bits = ["<b>%s</b>" % _e(stu.get("fio", "?"))]
+        if stu.get("group"):
+            bits.append("группа %s" % _e(stu["group"]))
+        if (stu.get("бригада", "") or "").strip():
+            bits.append("бригада «%s»" % _e(stu["бригада"]))
+        return (
+            err_html +
+            '<div class="notice">Вы вошли как: %s — работы будут зачтены '
+            'именно вам (ФИО и группа подтягиваются автоматически).</div>'
+            % " · ".join(bits) +
+            '<form method="post" action="/offline/upload" '
+            'enctype="multipart/form-data" class="staff-card">'
+            '<p>Выберите файл(ы) работы <code>.json</code> — полученные из '
+            'бланка («💾 Сохранить работу»). Можно сразу несколько — '
+            'каждый будет разобран отдельно.</p>'
+            '<p><label>Файлы работ: <input type="file" name="work" multiple '
+            'accept=".json,application/json" required></label></p>'
+            '<p><button>📥 Загрузить работу</button></p></form>'
+            '<div class="task-desc"><h3>Как это работает</h3>'
+            '<ol><li>На странице задания нажмите «⬇️ Бланк для офлайн-сдачи» '
+            'и сохраните бланк.</li>'
+            '<li>Откройте бланк в браузере (интернет не нужен), заполните '
+            'поля, при необходимости приложите файлы, нажмите «💾 Сохранить '
+            'работу» — получите файл <code>.json</code>.</li>'
+            '<li>Вернитесь на эту страницу и загрузите файл — сдача появится '
+            'в системе как обычная версия работы.</li></ol>'
+            '<p class="hint">Если в файле подпись другого студента, система '
+            'его не примет — такие работы загружает преподаватель пачкой '
+            'через панель.</p></div>')
+
+    @ctx.add_route("GET", "/offline", access="student")
+    def student_page(handler, params):
+        sid = handler._student()
+        stu = ctx.get_student(sid) or {}
+        return ctx.render_page("📥 Офлайн-сдача", _student_body(stu, ""))
+
+    @ctx.add_route("POST", "/offline/upload", access="student")
+    def upload_post(handler, params):
+        sid = handler._student()
+        data = handler._parse_post()
+        ups = _as_uploads(data.get("work"))
+        if not ups:
+            stu = ctx.get_student(sid) or {}
+            return ctx.render_page(
+                "📥 Офлайн-сдача", _student_body(
+                    stu, '<div class="error">Файлы работ не переданы — '
+                         'выберите файл .json</div>'))
+        rows = []
+        n_ok = 0
+        for up in ups:
+            try:
+                r = _import_one(ctx, handler, up, False, sid)
+            except Exception as ex:
+                r = {"ok": False, "err": "сбой обработки (%s)"
+                     % type(ex).__name__}
+            if r.get("ok"):
+                n_ok += 1
+                rows.append((up.name, True, r["info"]))
+            elif r.get("manual"):
+                rows.append((up.name, False,
+                             "работа без подписи, ФИО не совпало — загрузите "
+                             "через преподавателя"))
+            else:
+                rows.append((up.name, False,
+                             r.get("err", "неизвестная ошибка")))
+        body = ('<p><a href="/offline">← Загрузить ещё</a> · '
+                '<a href="/">На главную</a></p>'
+                '<h2>Результат загрузки (%d из %d принято)</h2>%s'
+                % (n_ok, len(ups), _rows_table(rows)))
+        return ctx.render_page("📥 Офлайн-сдача — результат", body)
+
+    # ── Панель преподавателя ─────────────────────────────────────────
+    def _staff_home_body(err_html):
+        lessons_html = []
+        for c in ctx.list_courses():
+            ls = ctx.list_lessons(c["id"])
+            if not ls:
+                continue
+            items = "".join(
+                '<li><a href="/staff/offline/blanks/%s">⬇️ Бланки .zip</a> — '
+                '%s</li>' % (_e(l["id"]), _e(l.get("title", ""))) for l in ls)
+            lessons_html.append('<li><b>%s</b><ul>%s</ul></li>'
+                                % (_e(c.get("title", "")), items))
+        return (
+            err_html +
+            '<form method="post" action="/staff/offline/import" '
+            'enctype="multipart/form-data" class="staff-card">'
+            '<p><b>Импорт работ</b> — файлы работ (.json), полученные из '
+            'бланков. Можно выбрать сразу несколько: система распознаёт '
+            'студента по подписи в файле или по ФИО/группе и создаёт сдачу. '
+            'Спорные работы будут предложены к ручному выбору студента.</p>'
+            '<p><label>Файлы работ: <input type="file" name="work" multiple '
+            'accept=".json,application/json" required></label></p>'
+            '<p><button>📥 Импортировать</button></p></form>'
+            '<div class="task-desc"><h2>Бланки заданий</h2>'
+            '<p class="hint">Бланк — автономный HTML-файл задания: можно '
+            'раздать студентам (на флешке, в чате). В бланке без входа '
+            'студент вписывает ФИО сам.</p>'
+            '<ul>%s</ul></div>' % "".join(lessons_html))
+
+    @ctx.add_route("GET", "/staff/offline", access="staff")
+    def staff_home(handler, params):
+        return ctx.render_page("📥 Офлайн-сдача", _staff_home_body(""),
+                               staff=True)
+
+    @ctx.add_route("POST", "/staff/offline/import", access="staff")
+    def import_post(handler, params):
+        data = handler._parse_post()
+        ups = _as_uploads(data.get("work"))
+        if not ups:
+            return ctx.render_page(
+                "📥 Офлайн-сдача", _staff_home_body(
+                    '<div class="error">Файлы работ не переданы — выберите '
+                    'файлы .json</div>'), staff=True)
+        _prune_pending(ctx)
+        pend = ctx.kv_load("pending", {})
+        batch_id = secrets.token_hex(8)
+        items = []
+        rows = []
+        total = 0
+        for up in ups:
+            try:
+                r = _import_one(ctx, handler, up, True, "")
+            except Exception as ex:
+                r = {"ok": False, "err": "сбой обработки (%s)"
+                     % type(ex).__name__}
+            if r.get("ok"):
+                rows.append((up.name, True, r["info"]))
+            elif r.get("manual"):
+                size = len(json.dumps(r["payload"], ensure_ascii=False))
+                if total + size > MAX_BATCH:
+                    rows.append((up.name, False,
+                                 "файл слишком большой для отложенного "
+                                 "выбора — обработайте отдельно"))
+                    continue
+                total += size
+                items.append({"i": len(items), "файл": up.name,
+                              "payload": r["payload"], "fio": r["fio"],
+                              "группа": r["группа"], "курс": r["курс"],
+                              "задание": r["задание"]})
+                rows.append((up.name, None,
+                             "студент не распознан — выберите вручную ниже"))
+            else:
+                rows.append((up.name, False,
+                             r.get("err", "неизвестная ошибка")))
+        if items:
+            pend[batch_id] = {"создан": time.time(), "items": items}
+            ctx.kv_save("pending", pend)
+        body = ('<p><a href="/staff/offline">← Импортировать ещё</a></p>'
+                '<h2>Результат импорта (%d из %d принято)</h2>%s'
+                % (sum(1 for _n, ok, _i in rows if ok), len(rows),
+                   _rows_table(rows)))
+        if items:
+            body += _pending_form(ctx, batch_id, items)
+        return ctx.render_page("📥 Импорт работ — результат", body, staff=True)
+
+    @ctx.add_route("POST", "/staff/offline/manual", access="staff")
+    def manual_post(handler, params):
+        data = handler._parse_post()
+        bid = str(data.get("batch") or "")
+        pend = ctx.kv_load("pending", {})
+        batch = pend.get(bid)
+        if not batch:
+            return ctx.render_page(
+                "Пачка не найдена",
+                '<p>Пачка не найдена или уже обработана.</p>'
+                '<p><a href="/staff/offline">← К импорту</a></p>', staff=True)
+        drop = str(data.get("drop") or "") == "1"
+        rows = []
+        if drop:
+            for it in batch.get("items") or []:
+                rows.append((it.get("файл", "?"), False, "отменено"))
+            pend.pop(bid, None)
+        else:
+            rest = []
+            for it in batch.get("items") or []:
+                sel = str(data.get("sel_%d" % it.get("i", 0)) or "")
+                if not sel:
+                    rest.append(it)
+                    continue
+                payload = it.get("payload") or {}
+                task = ctx.get_task(str(payload.get("задание") or ""))
+                if not task:
+                    rows.append((it.get("файл", "?"), False,
+                                 "задание не найдено — файл пропущен"))
+                    rest.append(it)
+                    continue
+                info, err = _do_submit(ctx, task, payload, sel, True, handler)
+                if err:
+                    rows.append((it.get("файл", "?"), False, err))
+                    rest.append(it)
+                else:
+                    rows.append((it.get("файл", "?"), True, info))
+            if rest:
+                batch["items"] = rest
+            else:
+                pend.pop(bid, None)
+        ctx.kv_save("pending", pend)
+        left = len((pend.get(bid) or {}).get("items") or [])
+        tail = (" · нераспознанных осталось: %d" % left) if left else ""
+        body = ('<h2>Зачтено вручную</h2>%s'
+                '<p><a href="/staff/offline">← К импорту</a>%s</p>'
+                % (_rows_table(rows), _e(tail)))
+        return ctx.render_page("📥 Импорт работ — вручную", body, staff=True)
+
+    # ── Бланки занятия архивом ───────────────────────────────────────
+    @ctx.add_route("GET", "/staff/offline/blanks/", access="staff")
+    def blanks_zip(handler, params):
+        lid = (params.get("_parts") or [""])[0]
+        lesson = ctx.get_lesson(lid)
+        if not lesson:
+            return ctx.render_page("Занятие не найдено",
+                                   "<p>Такого занятия нет.</p>", staff=True)
+        course = ctx.get_course(lesson.get("course", ""))
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for t in ctx.list_tasks(lid):
+                html = _build_blank(t, lesson, course, "", "", None)
+                zf.writestr("бланк_%s__%s.html" % (t.get("id", ""),
+                                                   _safefn(t.get("title", ""))),
+                            html.encode("utf-8"))
+        data = buf.getvalue()
+        import urllib.parse as _up
+        fname = "бланки_%s.zip" % _safefn(lesson.get("title", lid))
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/zip")
+        handler.send_header(
+            "Content-Disposition",
+            "attachment; filename*=UTF-8''" + _up.quote(fname))
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers()
+        handler.wfile.write(data)
+        return handler._SENT
+
+    ctx.log("загружен: офлайн-сдача")
+
+
+def _pending_form(ctx, batch_id, items):
+    """Форма ручного выбора студента для нераспознанных работ."""
+    blocks = []
+    for it in items:
+        opts = ['<option value="">— пропустить —</option>']
+        for s in _course_students(ctx, it.get("курс", "")):
+            bits = [s.get("fio", "?")]
+            if s.get("group"):
+                bits.append("гр. %s" % s["group"])
+            opts.append('<option value="%s">%s</option>'
+                        % (_e(s["id"]), _e(" · ".join(bits))))
+        blocks.append(
+            '<fieldset style="border:1px solid #dbe4ef;border-radius:10px;'
+            'margin:10px 0"><legend>Файл «%s»</legend>'
+            '<p>Задание: <b>%s</b> · ФИО в файле: <b>%s</b> · группа: %s</p>'
+            '<p><label>Зачесть студенту: <select name="sel_%d">%s</select>'
+            '</label></p></fieldset>'
+            % (_e(it.get("файл", "")), _e(it.get("задание", "")),
+               _e(it.get("fio", "?")), _e(it.get("группа", "?")),
+               it.get("i", 0), "".join(opts)))
+    return ('<h2>Нужен выбор студента (%d)</h2>'
+            '<p class="hint">В этих файлах нет подписи и ФИО не распознано '
+            'однозначно. Выберите, кому зачесть работу (или пропустите — '
+            'файлы останутся на 24 часа).</p>'
+            '<form method="post" action="/staff/offline/manual" '
+            'class="staff-card">'
+            '<input type="hidden" name="batch" value="%s">%s'
+            '<p><button>✔ Зачесть выбранные</button></p></form>'
+            '<form method="post" action="/staff/offline/manual" '
+            'class="staff-card" style="margin-top:8px">'
+            '<input type="hidden" name="batch" value="%s">'
+            '<input type="hidden" name="drop" value="1">'
+            '<p><button class="btn-sm">🗑 Отменить нераспознанные</button></p>'
+            '</form>' % (len(items), _e(batch_id), "".join(blocks),
+                         _e(batch_id)))

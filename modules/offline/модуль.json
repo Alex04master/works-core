@@ -1,0 +1,9 @@
+{
+  "id": "offline",
+  "name": "Офлайн-сдача",
+  "version": "1.0.0",
+  "api": 1,
+  "kind": "python",
+  "enabled": true,
+  "настройки": {}
+}
