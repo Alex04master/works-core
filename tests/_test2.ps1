@@ -392,6 +392,10 @@ try {
   Chk 'debug page renders' ($dbg -match 'debug/view')
   python -X utf8 tests\_chk_debug.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   debug mode' } else { Write-Output 'FAIL debug'; $script:fail++ }
+
+  # ---- offline module: blank JS fix + bulk blanks ----
+  python -X utf8 tests\_chk_blanki.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   offline blanks' } else { Write-Output 'FAIL offline blanks'; $script:fail++ }
 } finally {
   Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 }

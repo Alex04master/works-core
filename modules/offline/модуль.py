@@ -49,6 +49,7 @@ import os
 import re
 import secrets
 import time
+import urllib.parse
 import zipfile
 from datetime import datetime
 
@@ -294,8 +295,7 @@ def _field_html(fd):
             % (lab(), it, _e(key), req, extra, ph))
 
 
-BLANK_JS = """<script>
-var M=__META__,LBL=__LABELS__;
+BLANK_JS = """var M=__META__,LBL=__LABELS__;
 function $$(s){return document.querySelector(s)}
 function $$all(s){return document.querySelectorAll(s)}
 function slCollect(k){
@@ -391,7 +391,7 @@ function save(){
   }).catch(function(e){alert('Ошибка подготовки файла: '+(e.message||e))});
 }
 var FMT_WC=__FMT__;
-</script>"""
+"""
 
 BLANK_TPL = """<!doctype html>
 <html lang="ru">
@@ -531,6 +531,11 @@ document.addEventListener('DOMContentLoaded',function(){
       var a=document.createElement('a');a.href='/offline';
       a.title='Загрузить работу, выполненную офлайн';
       a.textContent='\\ud83d\\udce5 Офлайн-сдача';n.appendChild(a);
+    }
+    if(n&&!n.querySelector('a[href="/offline/blanki"]')){
+      var b=document.createElement('a');b.href='/offline/blanki';
+      b.title='Скачать бланки доступных заданий разом';
+      b.textContent='\\u2b07\\ufe0f Бланки';n.appendChild(b);
     }
   }
   var m=location.pathname.match(/^\\/task\\/([^\\/?]+)/);
@@ -1106,6 +1111,111 @@ def register(ctx):
         sid = handler._student()
         stu = ctx.get_student(sid) or {}
         return ctx.render_page("📥 Офлайн-сдача", _student_body(stu, ""))
+
+    # ── Страница: бланки доступных заданий (скачать разом) ───────────
+    @ctx.add_route("GET", "/offline/blanki", access="student")
+    def blanki_page(handler, params):
+        sid = handler._student()
+        stu = ctx.get_student(sid) or {}
+        brig = (stu.get("бригада", "") or "").strip()
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        err = (qs.get("err") or [""])[0]
+        err_html = ('<div class="error"><p>%s</p></div>' % _e(err)) if err else ""
+        blocks = ""
+        for c in ctx.list_courses():
+            if not ctx.can_access(c["id"], sid):
+                continue
+            secs = ""
+            for l in ctx.list_lessons(c["id"]):
+                rows = ""
+                for t in ctx.list_tasks(l["id"]):
+                    if not ctx.task_for_brigade(t, brig):
+                        continue
+                    rows += (
+                        '<label class="opt"><input type="checkbox" '
+                        'name="sel" value="%s" checked> %s</label>'
+                    ) % (_e(t["id"]), _e(t.get("title", "")))
+                if rows:
+                    secs += '<h3>%s</h3>%s' % (_e(l.get("title", "")), rows)
+            if secs:
+                blocks += ('<div class="staff-card"><h2>%s</h2>%s</div>'
+                           % (_e(c.get("title", "")), secs))
+        if not blocks:
+            body = ('<p><a href="/offline">← Офлайн-сдача</a></p>' + err_html +
+                    '<p class="hint">Доступных заданий пока нет — бланки '
+                    'появятся, когда преподаватель выдаст работы.</p>')
+        else:
+            body = (
+                '<p><a href="/offline">← Офлайн-сдача</a></p>' + err_html +
+                '<div class="notice">Вы вошли как: <b>%s</b>. В бланки '
+                'вписаны ваши данные и индивидуальные токены — работы '
+                'принимаются только из них.</div>' % _e(stu.get("fio", "?")) +
+                blocks +
+                '<form method="post" action="/offline/blanki.zip" '
+                'class="staff-card">'
+                '<p><button class="btn">⬇️ Скачать выбранные бланки '
+                '(.zip)</button> '
+                '<button class="btn btn-secondary" name="mode" value="all">'
+                '⬇️ Скачать ВСЕ бланки (.zip)</button></p>'
+                '<p class="hint">В архиве — по папке на занятие. Бланк '
+                'автономный: откройте его в браузере без интернета, '
+                'заполните, нажмите «💾 Сохранить работу» — получится файл '
+                '.json для загрузки на странице «📥 Офлайн-сдача».</p>'
+                '</form>')
+        return ctx.render_page("⬇️ Бланки работ", body)
+
+    @ctx.add_route("POST", "/offline/blanki.zip", access="student")
+    def blanki_zip(handler, params):
+        sid = handler._student()
+        stu = ctx.get_student(sid) or {}
+        brig = (stu.get("бригада", "") or "").strip()
+        data = handler._parse_post()
+        want_all = data.get("mode", "") == "all"
+        ids = data.get("sel")
+        if isinstance(ids, str):
+            ids = [ids]
+        want = {str(x) for x in (ids or [])}
+        buf = io.BytesIO()
+        n = 0
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for c in ctx.list_courses():
+                if not ctx.can_access(c["id"], sid):
+                    continue
+                for l in ctx.list_lessons(c["id"]):
+                    for t in ctx.list_tasks(l["id"]):
+                        if not ctx.task_for_brigade(t, brig):
+                            continue
+                        if not want_all and t["id"] not in want:
+                            continue
+                        token = _issue_token(ctx, sid, t["id"])
+                        signed = handler._sign_sid(sid) or ""
+                        html = _build_blank(
+                            t, l, c, sid, signed.split(".", 1)[-1], stu,
+                            token=token, issued=_fmt_ts(time.time()))
+                        folder = _safefn("%s (%s)" % (l.get("title", ""),
+                                                      l.get("id", "")))
+                        zf.writestr("%s/бланк-%s.html"
+                                    % (folder, _safefn(t.get("title", ""))),
+                                    html.encode("utf-8-sig"))
+                        n += 1
+        if not n:
+            handler._redirect("/offline/blanki?err=" + urllib.parse.quote(
+                "не выбрано ни одного доступного задания"))
+            return handler._SENT
+        d = buf.getvalue()
+        fname = "бланки-%s.zip" % _safefn(stu.get("fio", sid))
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/zip")
+        handler.send_header(
+            "Content-Disposition",
+            "attachment; filename*=UTF-8''" + urllib.parse.quote(fname))
+        handler.send_header("Content-Length", str(len(d)))
+        handler.end_headers()
+        handler.wfile.write(d)
+        ctx.audit("скачаны бланки (пачка)",
+                  {"студент": stu.get("fio", sid), "бланков": n},
+                  who=stu.get("fio", sid), handler=handler)
+        return handler._SENT
 
     @ctx.add_route("POST", "/offline/upload", access="student")
     def upload_post(handler, params):
