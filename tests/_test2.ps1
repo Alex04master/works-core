@@ -396,6 +396,8 @@ try {
   # ---- offline module: blank JS fix + bulk blanks ----
   python -X utf8 tests\_chk_blanki.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   offline blanks' } else { Write-Output 'FAIL offline blanks'; $script:fail++ }
+  python -X utf8 tests\_chk_planoff.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   offline scenario submission' } else { Write-Output 'FAIL offline scenario'; $script:fail++ }
 } finally {
   Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 }

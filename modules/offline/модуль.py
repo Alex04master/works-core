@@ -987,6 +987,14 @@ def _do_submit(ctx, task, payload, sid, for_staff, handler, warn=""):
     pb = str((payload.get("студент") or {}).get("бригада") or "").strip()
     brigade = pb if pb and pb == str(stu.get("бригада") or "").strip() else ""
 
+    # Сценарное задание (интерактивный план): в бланке план не
+    # передаётся, а ядро требует его (обязательное поле). Подставляем
+    # пустой план с явной пометкой, иначе офлайн-сдача сценария
+    # всегда отклонялась бы.
+    if ftypes.get("plan_data") and "plan_data" not in answers:
+        answers["plan_data"] = "[]"
+        note += (" · " if note else "") + "план не прилагался (офлайн-сдача)"
+
     sub, err = ctx.submit(task.get("id", ""), sid, answers, files, note,
                           brigade)
     if err or not sub:
@@ -1133,8 +1141,10 @@ def register(ctx):
                         continue
                     rows += (
                         '<label class="opt"><input type="checkbox" '
-                        'name="sel" value="%s" checked> %s</label>'
-                    ) % (_e(t["id"]), _e(t.get("title", "")))
+                        'name="sel" value="%s" checked> %s%s</label>'
+                    ) % (_e(t["id"]), _e(t.get("title", "")),
+                         ' <span class="reason">(план — на сайте)</span>'
+                         if (t.get("настройки") or {}).get("план") else "")
                 if rows:
                     secs += '<h3>%s</h3>%s' % (_e(l.get("title", "")), rows)
             if secs:
