@@ -97,7 +97,7 @@ try:
         ('href="/task/%s"' % tid) not in lp)
     tp0 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
     chk("waiting: scenario task hidden until issued",
-        "task-form" not in tp0 and "не выдано" in tp0)
+        'class="task-form"' not in tp0 and "не выдано" in tp0)
     mjs = curl("http://localhost:8093/materials/c1/%s/event.js" % lid)
     pls = curl("http://localhost:8093/materials/c1/%s/plans.js" % lid)
     chk("widget data served (event.js/plans.js)",
@@ -324,7 +324,7 @@ try:
     curl("-b", "_e2e_staff.txt", "-d", "lesson=%s" % lid,
          "-d", "iss=%s|Iskra" % tid, "http://localhost:8093/staff/issue_mass")
     e1 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
-    chk("mass: unassigned student blocked", "task-form" not in e1)
+    chk("mass: unassigned student blocked", 'class="task-form"' not in e1)
     cpage = curl("-b", "_e2e_s1.txt", "http://localhost:8093/course/c1")
     chk("locked lesson hidden on course page", "больнице" not in cpage)
     lp3 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/lesson/%s" % lid)
@@ -332,13 +332,13 @@ try:
     curl("-b", "_e2e_staff.txt", "-d", "lesson=%s" % lid,
          "-d", "alltask=%s" % tid, "http://localhost:8093/staff/issue_mass")
     e2 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
-    chk("mass issue-all restores", "task-form" in e2)
+    chk("mass issue-all restores", 'class="task-form"' in e2)
 
     # выдача бригадам: сценарий видят только назначенные бригады
     curl("-b", "_e2e_staff.txt", "-d", "task=%s" % tid,
          "-d", "brigade=Iskra", "http://localhost:8093/staff/task_issue")
     tp2 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
-    chk("issued task hidden from brigadeless student", "task-form" not in tp2)
+    chk("issued task hidden from brigadeless student", 'class="task-form"' not in tp2)
     pp2 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/plan/%s" % tid)
     chk("plan hidden too", "wcplan_" not in pp2)
     lp2 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/lesson/%s" % lid)
@@ -351,7 +351,7 @@ try:
     curl("-b", "_e2e_staff.txt", "-d", "task=%s" % tid, "-d", "all=on",
          "http://localhost:8093/staff/task_issue")
     tp3 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
-    chk("issue-all restores visibility", "task-form" in tp3)
+    chk("issue-all restores visibility", 'class="task-form"' in tp3)
     rd = subprocess.run(["curl.exe", "-s", "-i", "-b", "_e2e_s1.txt",
                          "-F", "task=%s" % tid, "-F", "calc=x",
                          "http://localhost:8093/api/submit"],
@@ -381,7 +381,7 @@ try:
          "http://localhost:8093/staff/task_off?task=%s&back=/staff/task/%s"
          % (tid, tid))
     tp4 = curl("-b", "_e2e_s1.txt", "http://localhost:8093/task/%s" % tid)
-    chk("revoke hides task again", "task-form" not in tp4)
+    chk("revoke hides task again", 'class="task-form"' not in tp4)
     curl("-b", "_e2e_staff.txt", "-d", "task=%s" % tid, "-d", "all=on",
          "http://localhost:8093/staff/task_issue")
 
