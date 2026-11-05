@@ -25,12 +25,27 @@
 Файл работы:
     {"формат": "works-core-работа", "версия": 1, "задание": "t1", …,
      "студент": {"sid":…, "подпись":…, "fio":…, "группа":…, "бригада":…},
-     "ответы": {…}, "файлы": {ключ: [{"имя":…, "b64":…}]}}
+     "токен": <токен выдачи бланка>, "ответы": {…},
+     "файлы": {ключ: [{"имя":…, "b64":…}]}}
+
+Защита от списывания:
+    При скачивании бланка со своей страницы студенту выдаётся
+    индивидуальный токен (KV «выдачи»; при перевыпуске старый стирается).
+    Работа студента без своего актуального токена блокируется; при импорте
+    преподавателем несовпадение токена — предупреждение (можно зачесть
+    вручную). Работы студентов без подписи студентом не принимаются.
+    Детект сходства: при каждой сдаче текстовые ответы сравниваются
+    с работами других студентов по заданию (шинглы слов, порог 60%),
+    идентичные файлы тоже отмечаются; пары попадают в KV «флаги» и
+    показываются в панели /staff/offline (разделы «⚠️ Возможное
+    списывание» и «🔐 Токены выдачи бланков»).
 """
 import base64
+import hashlib
 import html as _html
 import io
 import json
+import os
 import re
 import secrets
 import time
@@ -42,6 +57,9 @@ VER = 1
 MAX_ATTACH = 8 * 1024 * 1024     # вложения одной работы (в данных)
 MAX_BATCH = 20 * 1024 * 1024     # пачка отложенного импорта
 PENDING_TTL = 24 * 3600
+SIM_MIN = 0.60                   # порог Жаккара: тексты похожи
+SIM_K = 3                        # размер шингла (слов)
+SIM_MIN_WORDS = 12               # короче — не сравниваем
 
 
 # ── Вспомогательные ──────────────────────────────────────────────────────
@@ -360,7 +378,7 @@ function save(){
   if(!stu.fio){alert('Впишите ФИО в шапке бланка.');return}
   buildFiles().then(function(files){
     var p={формат:FMT_WC,версия:1,задание:M.tid,курс:M.cid,занятие:M.lid,
-      студент:stu,когда:new Date().toISOString(),
+      студент:stu,токен:M.token||'',когда:new Date().toISOString(),
       примечание:idv('bf_note'),ответы:buildAnswers(),файлы:files};
     var blob=new Blob([JSON.stringify(p)],{type:'application/json'});
     var a=document.createElement('a');
@@ -410,8 +428,10 @@ __FORM__
 </html>"""
 
 
-def _build_blank(task, lesson, course, sid, signed, stu=None):
-    """Собрать HTML бланка. sid="" — анонимный бланк (поля ввода ФИО)."""
+def _build_blank(task, lesson, course, sid, signed, stu=None, token="",
+                 issued=""):
+    """Собрать HTML бланка. sid="" — анонимный бланк (поля ввода ФИО).
+    token — индивидуальный токен выдачи (защита от списывания)."""
     title = task.get("title", "")
     settings = task.get("настройки") or {}
     dl = _parse_dl(settings.get("срок"))
@@ -426,6 +446,8 @@ def _build_blank(task, lesson, course, sid, signed, stu=None):
         "deadline": dl.strftime("%d.%m.%Y %H:%M") if dl else "",
         "sid": sid or "",
         "sig": signed or "",
+        "token": token or "",
+        "выдан": issued or "",
         "fio": (stu.get("fio") or "") if sid else "",
         "group": (stu.get("group") or "") if sid else "",
         "brigade": (stu.get("бригада") or "").strip() if sid else "",
@@ -482,6 +504,12 @@ def _ident_html(meta):
         if meta["brigade"]:
             bits.append("бригада «%s»" % _e(meta["brigade"]))
         bits.append('<span class="muted">— данные подтверждены системой</span>')
+        if meta.get("token"):
+            code = str(meta["token"])[-8:]
+            mark = "бланк промаркирован: код %s-%s" % (code[:4], code[4:])
+            if meta.get("выдан"):
+                mark += " · выдан %s" % meta["выдан"]
+            bits.append('<span class="muted">%s</span>' % _e(mark))
         return "<div>%s</div>" % " · ".join(bits)
     return ('<div><b>Работу сдал(а):</b> '
             '<input type="text" id="bf_fio" placeholder="ФИО полностью" '
@@ -537,16 +565,123 @@ def _rows_table(rows):
     for name, ok, info in rows:
         icon = "✅" if ok else ("⏸" if ok is None else "❌")
         cell = _e(info) if not isinstance(info, dict) else (
-            "сдано: <b>%s</b> · задание «%s» · версия %d%s" % (
+            "сдано: <b>%s</b> · задание «%s» · версия %d%s%s%s" % (
                 _e(info.get("студент", "")), _e(info.get("задание", "")),
                 info.get("версия", 0),
                 " · за бригаду «%s»" % _e(info["бригада"])
-                if info.get("бригада") else ""))
+                if info.get("бригада") else "",
+                " · ⚠ токен: %s" % _e(info["warn"]) if info.get("warn") else "",
+                " · ⚠ похоже на работу: %s" % _e(info["похожесть"])
+                if info.get("похожесть") else ""))
         out.append('<tr><td style="border:1px solid #dbe4ef;padding:6px 10px">%s'
                    '</td><td style="border:1px solid #dbe4ef;padding:6px 10px">'
                    '%s %s</td></tr>' % (_e(name), icon, cell))
     out.append("</table>")
     return "".join(out)
+
+
+def _staff_sim_section(ctx):
+    """Панель «Возможное списывание»: пары похожих работ."""
+    flags = ctx.kv_load("флаги", {})
+    rows = []
+    for tid, items in flags.items():
+        task = ctx.get_task(tid) or {}
+        tname = task.get("title") or tid
+        for it in items:
+            a = (ctx.get_student(str(it.get("sid_a") or "")) or {}).get(
+                "fio") or it.get("sid_a") or "?"
+            b = (ctx.get_student(str(it.get("sid_b") or "")) or {}).get(
+                "fio") or it.get("sid_b") or "?"
+            rows.append((str(it.get("когда") or ""), tname, str(a), str(b),
+                         it))
+    rows.sort(reverse=True)
+    if not rows:
+        return ('<div class="task-desc"><h2>⚠️ Возможное списывание</h2>'
+                '<p class="hint">Совпадений работ не обнаружено. Сравнение '
+                'выполняется автоматически при каждой офлайн-сдаче: '
+                'похожесть текста (шинглы слов, порог %d%%) и полностью '
+                'идентичные файлы.</p></div>' % round(SIM_MIN * 100))
+    trs = "".join(
+        '<tr><td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
+        '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
+        '<td style="border:1px solid #dbe4ef;padding:6px 10px"><b>%s</b></td>'
+        '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
+        '<td style="border:1px solid #dbe4ef;padding:6px 10px">%d%% · %s</td>'
+        '</tr>' % (_e(w), _e(t), _e(a), _e(b), it.get("процент", 0),
+                   _e(it.get("тип", "")))
+        for w, t, a, b, it in rows[:100])
+    return ('<div class="task-desc"><h2>⚠️ Возможное списывание</h2>'
+            '<p>Найдено пар: %d</p>'
+            '<table style="border-collapse:collapse;width:100%%">'
+            '<tr><th style="text-align:left;border:1px solid #dbe4ef;'
+            'padding:6px 10px;background:#eef2f7">Когда</th>'
+            '<th style="text-align:left;border:1px solid #dbe4ef;'
+            'padding:6px 10px;background:#eef2f7">Задание</th>'
+            '<th style="text-align:left;border:1px solid #dbe4ef;'
+            'padding:6px 10px;background:#eef2f7">Работа</th>'
+            '<th style="text-align:left;border:1px solid #dbe4ef;'
+            'padding:6px 10px;background:#eef2f7">Похожа на работу</th>'
+            '<th style="text-align:left;border:1px solid #dbe4ef;'
+            'padding:6px 10px;background:#eef2f7">Сходство</th></tr>%s'
+            '</table><p class="hint">Проверьте обе работы, прежде чем '
+            'принимать. Сходство 100%% по файлу — схемы приложены '
+            'одинаковые.</p></div>' % (len(rows), trs))
+
+
+def _staff_tokens_section(ctx):
+    """Панель «Токены выдачи»: кому и когда выдавались бланки."""
+    kv = ctx.kv_load("выдачи", {})
+    if not kv:
+        return ('<div class="task-desc"><h2>🔐 Токены выдачи бланков</h2>'
+                '<p class="hint">Бланки ещё не выдавались. Токен вшивается '
+                'в бланк при скачивании со страницы задания; работа без '
+                'своего токена от студента не принимается.</p></div>')
+    rows = []
+    for k, rec in kv.items():
+        sid, _sep, tid = k.partition("|")
+        stu = ctx.get_student(sid) or {}
+        task = ctx.get_task(tid) or {}
+        sub = ctx._core.sub(tid, sid)
+        vers = (sub or {}).get("versions") or []
+        if vers:
+            last = vers[-1]
+            tok = (last.get("офлайн") or {}).get("токен") or ""
+            state = ("✔ токен совпадает" if tok == "ok"
+                     else ("⚠ %s" % tok if tok
+                           else "— сдано не через офлайн-модуль"))
+            when_sub = "версия %s · %s" % (
+                last.get("n", "?"),
+                str(last.get("time", ""))[:16].replace("T", " "))
+        else:
+            state, when_sub = "— работа не сдана", "—"
+        rows.append((rec.get("выдан") or 0, task.get("title") or tid,
+                     stu.get("fio") or sid, _fmt_ts(rec.get("выдан")),
+                     when_sub, state))
+    rows.sort(reverse=True)
+    trs = "".join(
+        '<tr><td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
+        '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
+        '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
+        '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
+        '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td></tr>'
+        % (_e(t), _e(s), _e(i), _e(c), _e(st))
+        for _ts, t, s, i, c, st in rows[:100])
+    return ('<div class="task-desc"><h2>🔐 Токены выдачи бланков</h2>'
+            '<table style="border-collapse:collapse;width:100%%">'
+            '<tr><th style="text-align:left;border:1px solid #dbe4ef;'
+            'padding:6px 10px;background:#eef2f7">Задание</th>'
+            '<th style="text-align:left;border:1px solid #dbe4ef;'
+            'padding:6px 10px;background:#eef2f7">Студент</th>'
+            '<th style="text-align:left;border:1px solid #dbe4ef;'
+            'padding:6px 10px;background:#eef2f7">Бланк выдан</th>'
+            '<th style="text-align:left;border:1px solid #dbe4ef;'
+            'padding:6px 10px;background:#eef2f7">Работа сдана</th>'
+            '<th style="text-align:left;border:1px solid #dbe4ef;'
+            'padding:6px 10px;background:#eef2f7">Токен</th></tr>%s</table>'
+            '<p class="hint">При скачивании бланка старый токен стирается '
+            'и выдаётся новый: действителен только последний. '
+            'Показано %d из %d записей.</p></div>'
+            % (trs, min(100, len(rows)), len(rows)))
 
 
 def _course_students(ctx, cid):
@@ -567,6 +702,149 @@ def _prune_pending(ctx):
         for k in stale:
             pend.pop(k, None)
         ctx.kv_save("pending", pend)
+
+
+# ── Токены выдачи бланков (защита от списывания) ─────────────────────────
+
+def _issue_token(ctx, sid, tid):
+    """Выдать индивидуальный токен бланка. Старый токен стирается."""
+    tok = secrets.token_hex(12)
+    kv = ctx.kv_load("выдачи", {})
+    kv["%s|%s" % (sid, tid)] = {"токен": tok, "выдан": time.time()}
+    ctx.kv_save("выдачи", kv)
+    return tok
+
+
+def _issued_rec(ctx, sid, tid):
+    """Запись о выдаче токена студенту за задание (или None)."""
+    return (ctx.kv_load("выдачи", {}).get("%s|%s" % (sid, tid)))
+
+
+def _fmt_ts(ts):
+    try:
+        return datetime.fromtimestamp(float(ts)).strftime("%d.%m.%Y %H:%M")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return ""
+
+
+def _token_check(ctx, payload, sid, for_staff):
+    """Проверить токен выдачи в файле работы.
+
+    Возвращает "" (ok) или текст предупреждения; для студента отказ
+    оформляет вызывающая сторона через ValueError.
+    """
+    tok = str(payload.get("токен") or "")
+    rec = _issued_rec(ctx, sid, str(payload.get("задание") or ""))
+    if not rec:
+        if for_staff:
+            return "токен выдачи не выдавался этому студенту"
+        raise ValueError("токен выдачи не найден — бланк для этого задания "
+                         "вам ещё не выдавался. Скачайте бланк со своей "
+                         "страницы задания")
+    if not tok:
+        if for_staff:
+            return "токен выдачи отсутствует в файле"
+        raise ValueError("в файле нет токена выдачи — скачайте бланк со "
+                         "своей страницы задания заново")
+    if tok != rec.get("токен"):
+        if for_staff:
+            return "токен выдачи не совпадает с выданным"
+        raise ValueError("токен выдачи не совпадает — файл из чужого бланка "
+                         "или бланк был перевыпущен. Скачайте бланк заново "
+                         "и заполните его")
+    return ""
+
+
+# ── Детект сходства работ (шинглы слов + Жаккар, идентичные файлы) ───────
+
+def _shingles(text, k=SIM_K, min_words=SIM_MIN_WORDS):
+    """Множество k-словных шинглов, свёрнутых в 64-битные хеши."""
+    words = [w for w in re.split(r"\W+", str(text or "").lower()) if w]
+    if len(words) < min_words:
+        return set()
+    return {int.from_bytes(hashlib.blake2b(
+        " ".join(words[i:i + k]).encode("utf-8"),
+        digest_size=8).digest(), "big")
+        for i in range(len(words) - k + 1)}
+
+
+def _jaccard(a, b):
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _sim_text_fp(task, answers):
+    """Отпечаток текстовых полей формы (text/textarea)."""
+    types = {fd.get("ключ"): fd.get("тип")
+             for fd in (task.get("форма") or [])}
+    parts = [v for k, v in (answers or {}).items()
+             if isinstance(v, str) and types.get(k) in ("text", "textarea")]
+    return _shingles(" ".join(parts))
+
+
+def _sim_file_fp(ctx, ver):
+    """SHA-256 приложенных файлов работы (для поиска идентичных копий)."""
+    out = {}
+    base = ctx._core.store.subs
+    for k, meta in (ver.get("files") or {}).items():
+        rel = str(meta.get("файл") or "")
+        p = os.path.join(base, *rel.split("/")) if rel else ""
+        if not p:
+            continue
+        try:
+            with open(p, "rb") as f:
+                out[k] = hashlib.sha256(f.read()).hexdigest()
+        except OSError:
+            pass
+    return out
+
+
+def _sim_check(ctx, task, tid, sid, ver, key):
+    """Сравнить работу с работами других студентов по этому заданию.
+
+    Возвращает список совпадений [{sid, fio, вер, процент, тип}] и
+    записывает флаги в KV «флаги» + отпечаток в KV «sim».
+    """
+    text_fp = _sim_text_fp(task, ver.get("answers") or {})
+    file_fp = _sim_file_fp(ctx, ver)
+    if not text_fp and not file_fp:
+        return []
+    kv = ctx.kv_load("sim", {})
+    store = kv.get(tid) or []
+    matches = []
+    flags = ctx.kv_load("флаги", {})
+    now = datetime.now().isoformat(timespec="seconds")
+    for e in store:
+        if e.get("sid") == sid:
+            continue
+        pct, typ = 0.0, ""
+        j = _jaccard(text_fp, set(e.get("шиглы") or []))
+        if j >= SIM_MIN:
+            pct, typ = j, "текст"
+        eh = set((e.get("файлы") or {}).values())
+        for h in file_fp.values():
+            if h in eh and 1.0 > pct:
+                pct, typ = 1.0, "файл"
+        if not typ:
+            continue
+        stu2 = ctx.get_student(e.get("sid") or "") or {}
+        matches.append({"sid": e.get("sid", ""), "fio": stu2.get("fio", "?"),
+                        "вер": e.get("вер", 1),
+                        "процент": round(pct * 100), "тип": typ})
+        fl = flags.setdefault(tid, [])
+        if not any(f.get("a") == e.get("key") and f.get("b") == key
+                   for f in fl):
+            fl.append({"a": e.get("key", ""), "b": key,
+                       "sid_a": e.get("sid", ""), "sid_b": sid,
+                       "процент": round(pct * 100), "тип": typ,
+                       "когда": now})
+        ctx.kv_save("флаги", flags)
+    store.append({"key": key, "sid": sid, "вер": ver.get("n", 1),
+                  "шиглы": sorted(text_fp), "файлы": file_fp, "когда": now})
+    kv[tid] = store[-300:]
+    ctx.kv_save("sim", kv)
+    return matches
 
 
 # ── Разбор файла работы ──────────────────────────────────────────────────
@@ -595,7 +873,8 @@ def _import_one(ctx, handler, up, for_staff, current_sid):
         return {"ok": False, "err": "задание «%s» не найдено" % (tid or "?")}
     stu_in = payload.get("студент") or {}
     try:
-        sid = _resolve_student(ctx, handler, payload, for_staff, current_sid)
+        sid, warn = _resolve_student(ctx, handler, payload, for_staff,
+                                     current_sid)
     except _Manual:
         return {"ok": False, "manual": True, "payload": payload,
                 "fio": str(stu_in.get("fio") or "?"),
@@ -604,17 +883,19 @@ def _import_one(ctx, handler, up, for_staff, current_sid):
                 "задание": tid}
     except ValueError as ex:
         return {"ok": False, "err": str(ex)}
-    info, err = _do_submit(ctx, task, payload, sid, for_staff, handler)
+    info, err = _do_submit(ctx, task, payload, sid, for_staff, handler, warn)
     if err:
         return {"ok": False, "err": err}
     return {"ok": True, "info": info}
 
 
 def _resolve_student(ctx, handler, payload, for_staff, current_sid):
-    """Определить студента по файлу работы, вернуть его sid.
+    """Определить студента по файлу работы. Возвращает (sid, предупреждение).
 
     Бросает _Manual (спорная работа — нужен выбор преподавателя)
     или ValueError (отказ с текстом ошибки).
+    Работа студента обязана нести валидный токен выдачи бланка; для
+    преподавателя несовпадение токена — предупреждение, не отказ.
     """
     stu_in = payload.get("студент") or {}
     sid = str(stu_in.get("sid") or "")
@@ -630,18 +911,18 @@ def _resolve_student(ctx, handler, payload, for_staff, current_sid):
             raise ValueError("в файле работа другого студента")
         if not ctx.get_student(sid):
             raise ValueError("студент «%s» не найден в системе" % sid)
-        return sid
+        warn = _token_check(ctx, payload, sid, for_staff)
+        return sid, warn
 
-    # Анонимный файл (без подписи): распознаём по ФИО.
-    if not fio:
-        raise ValueError("в файле нет ни подписи, ни ФИО студента")
+    # Файл без подписи.
     if not for_staff:
-        own = ctx.get_student(current_sid) or {}
-        if _norm_fio(own.get("fio")) != fio:
-            raise ValueError("в файле работа другого студента")
-        return current_sid
+        # Студенту запрещено целиком: работа обязана идти из его бланка.
+        raise ValueError("в файле нет токена выдачи. Скачайте бланк со "
+                         "своей страницы задания и сдайте работу в нём")
 
     # Преподаватель: однозначное совпадение ФИО среди студентов курса.
+    if not fio:
+        raise ValueError("в файле нет ни подписи, ни ФИО студента")
     cands = [s for s in _course_students(ctx, str(payload.get("курс") or ""))
              if _norm_fio(s.get("fio")) == fio]
     if group:
@@ -649,11 +930,11 @@ def _resolve_student(ctx, handler, payload, for_staff, current_sid):
         if byg:
             cands = byg
     if len(cands) == 1:
-        return cands[0]["id"]
+        return cands[0]["id"], ""
     raise _Manual()
 
 
-def _do_submit(ctx, task, payload, sid, for_staff, handler):
+def _do_submit(ctx, task, payload, sid, for_staff, handler, warn=""):
     """Создать сдачу из файла работы. Возвращает (info, ошибка)."""
     stu = ctx.get_student(sid) or {}
     answers = {}
@@ -709,6 +990,22 @@ def _do_submit(ctx, task, payload, sid, for_staff, handler):
     ver = versions[-1] if versions else {}
     info = {"студент": stu.get("fio", sid), "задание": task.get("title", ""),
             "версия": ver.get("n", len(versions)), "бригада": brigade}
+
+    # Маркировка версии + детект сходства (защита от списывания).
+    rec = _issued_rec(ctx, sid, task.get("id", "")) or {}
+    ver["офлайн"] = {"токен": warn or "ok",
+                     "бланк_выдан": _fmt_ts(rec.get("выдан")),
+                     "файл_работы": str(payload.get("когда") or "")}
+    sim = _sim_check(ctx, task, task.get("id", ""), sid, ver,
+                     sub.get("key", ""))
+    if sim:
+        ver["похожесть"] = sim
+        info["похожесть"] = ", ".join(
+            "%s (%d%%)" % (m["fio"], m["процент"]) for m in sim[:3])
+    if warn:
+        info["warn"] = warn
+    ctx._core.store.save()
+
     ctx.audit("офлайн-сдача",
               details="%s · %s · версия %s%s"
                       % (stu.get("fio", sid), task.get("title", ""),
@@ -763,7 +1060,11 @@ def register(ctx):
         # ровно то, что ждёт _resolve_student при проверке файла работы.
         signed = handler._sign_sid(sid) if sid else ""
         mac = signed.split(".", 1)[1] if signed else ""
-        html = _build_blank(task, lesson, course, sid or "", mac, stu or {})
+        # Индивидуальный токен выдачи: при каждом скачивании старый
+        # стирается и выдаётся новый (защита от списывания).
+        token = _issue_token(ctx, sid, task.get("id", "")) if sid else ""
+        html = _build_blank(task, lesson, course, sid or "", mac, stu or {},
+                            token=token, issued=_fmt_ts(time.time()))
         handler._send_html(html)
         return handler._SENT
 
@@ -789,7 +1090,8 @@ def register(ctx):
             '<p><button>📥 Загрузить работу</button></p></form>'
             '<div class="task-desc"><h3>Как это работает</h3>'
             '<ol><li>На странице задания нажмите «⬇️ Бланк для офлайн-сдачи» '
-            'и сохраните бланк.</li>'
+            'и сохраните бланк — он промаркирован вашим индивидуальным '
+            'токеном, работа принимается только из него.</li>'
             '<li>Откройте бланк в браузере (интернет не нужен), заполните '
             'поля, при необходимости приложите файлы, нажмите «💾 Сохранить '
             'работу» — получите файл <code>.json</code>.</li>'
@@ -867,7 +1169,8 @@ def register(ctx):
             '<p class="hint">Бланк — автономный HTML-файл задания: можно '
             'раздать студентам (на флешке, в чате). В бланке без входа '
             'студент вписывает ФИО сам.</p>'
-            '<ul>%s</ul></div>' % "".join(lessons_html))
+            '<ul>%s</ul></div>' % "".join(lessons_html)
+            + _staff_sim_section(ctx) + _staff_tokens_section(ctx))
 
     @ctx.add_route("GET", "/staff/offline", access="staff")
     def staff_home(handler, params):

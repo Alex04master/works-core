@@ -166,6 +166,12 @@ def main():
         check("бланк: поле number", 'data-key="period"' in blank)
         check("бланк: поле file", 'data-type="file"' in blank)
 
+        # индивидуальный токен выдачи (защита от списывания)
+        m_tok = re.search(r'"token": "([0-9a-f]+)"', blank)
+        token1 = m_tok.group(1) if m_tok else ""
+        check("бланк: токен в META", len(token1) == 24, token1)
+        check("бланк: маркировка видна", "бланк промаркирован" in blank)
+
         # анонимный бланк: поля ФИО для ввода
         conn.request("GET", "/offline/blank/t1")
         r = conn.getresponse()
@@ -173,22 +179,24 @@ def main():
         check("бланк аноним: ввод ФИО", 'id="bf_fio"' in blank_anon)
 
         # ── файл работы (как его собирает JS бланка) ─────────────────
-        def make_work(sid, fio, group="П-21", brigade="", fio_field=None):
+        def make_work(sid, fio, group="П-21", brigade="", fio_field=None,
+                      token="", answers=None):
             return json.dumps({
                 "формат": "works-core-работа", "версия": 1,
                 "задание": "t1", "курс": "c1", "занятие": "l1",
                 "студент": {"sid": sid, "подпись": sig(sid) if sid else "",
                             "fio": fio_field or fio, "группа": group,
                             "бригада": brigade},
+                "токен": token,
                 "когда": "2026-11-05T12:00:00",
                 "примечание": "выполнено дома",
-                "ответы": {"answer": "Решение из дома", "period": "600",
-                           "mode": "норма"},
+                "ответы": answers or {"answer": "Решение из дома",
+                                      "period": "600", "mode": "норма"},
                 "файлы": {"sketch": [{"имя": "схема.robxsim",
                                       "b64": B64(b"ROBXSIM-OK")}]},
             }, ensure_ascii=False).encode("utf-8")
 
-        w1 = make_work("s1", "Иванов И.И.")
+        w1 = make_work("s1", "Иванов И.И.", token=token1)
 
         # ── загрузка студентом ───────────────────────────────────────
         r, page = post_multipart(conn, "/offline/upload",
@@ -222,6 +230,33 @@ def main():
         page = page.decode("utf-8", "replace")
         check("битый файл отклонён", "не читается как JSON" in page)
 
+        # ── защита от списывания: токен выдачи ───────────────────────
+        # подписанный файл без токена
+        r, page = post_multipart(conn, "/offline/upload",
+                                 [("work", "нетокен.json",
+                                   make_work("s1", "Иванов И.И."))],
+                                 cookie=st1_ck)
+        page = page.decode("utf-8", "replace")
+        check("нет токена — блок", "в файле нет токена выдачи" in page,
+              page[:300])
+        # подписанный файл с чужим токеном
+        r, page = post_multipart(conn, "/offline/upload",
+                                 [("work", "чужтокен.json",
+                                   make_work("s1", "Иванов И.И.",
+                                             token="f" * 24))],
+                                 cookie=st1_ck)
+        page = page.decode("utf-8", "replace")
+        check("чужой токен — блок", "токен выдачи не совпадает" in page,
+              page[:300])
+        # анонимный файл (без подписи) от студента
+        r, page = post_multipart(conn, "/offline/upload",
+                                 [("work", "аноним.json",
+                                   make_work("", "Иванов И.И."))],
+                                 cookie=st1_ck)
+        page = page.decode("utf-8", "replace")
+        check("анонимный файл студенту запрещён",
+              "сдайте работу в нём" in page, page[:300])
+
         # реестр: версии, ответы, файл на диске
         with open(os.path.join(STORE, "реестр.json"), encoding="utf-8") as f:
             db = json.load(f)
@@ -236,6 +271,62 @@ def main():
             check("вложение на диске", f.read() == b"ROBXSIM-OK")
         check("ответы формы", float(sub["versions"][0]["answers"]["period"])
               == 600 and sub["versions"][0]["answers"]["mode"] == "норма")
+
+        # ── повторная выдача: старый токен стирается ─────────────────
+        conn.request("GET", "/offline/blank/t1", headers={"Cookie": st1_ck})
+        r = conn.getresponse()
+        blank2 = r.read().decode("utf-8", "replace")
+        m2 = re.search(r'"token": "([0-9a-f]+)"', blank2)
+        token2 = m2.group(1) if m2 else ""
+        check("токен перевыпущен", len(token2) == 24 and token2 != token1,
+              token2)
+        r, page = post_multipart(conn, "/offline/upload",
+                                 [("work", "старый.json",
+                                   make_work("s1", "Иванов И.И.",
+                                             token=token1))],
+                                 cookie=st1_ck)
+        page = page.decode("utf-8", "replace")
+        check("старый токен отклонён", "не совпадает" in page, page[:300])
+        r, page = post_multipart(conn, "/offline/upload",
+                                 [("work", "новый.json",
+                                   make_work("s1", "Иванов И.И.",
+                                             token=token2))],
+                                 cookie=st1_ck)
+        page = page.decode("utf-8", "replace")
+        check("новый токен принят", "1 из 1 принято" in page, page[:300])
+
+        # ── детект сходства работ ────────────────────────────────────
+        LONG = ("Контроллер опрашивает считыватель каждые пятьдесят "
+                "миллисекунд и при чтении карты сверяет хеш пина с записью "
+                "в энергонезависимой памяти, после чего открывает замок "
+                "и пишет событие в журнал.")
+        ans_long = {"answer": LONG, "period": "600", "mode": "норма"}
+        r, page = post_multipart(conn, "/offline/upload",
+                                 [("work", "иванов_длинная.json",
+                                   make_work("s1", "Иванов И.И.",
+                                             token=token2,
+                                             answers=ans_long))],
+                                 cookie=st1_ck)
+        page = page.decode("utf-8", "replace")
+        check("длинная работа s1 принята", "1 из 1 принято" in page,
+              page[:300])
+        # ту же работу сдаёт s2 (анонимный файл, импорт преподавателем)
+        w_same = make_work("", "Петров П.П.", "П-21", answers=ans_long)
+        r, page = post_multipart(conn, "/staff/offline/import",
+                                 [("work", "петров_копия.json", w_same)],
+                                 cookie=staff_ck)
+        page = page.decode("utf-8", "replace")
+        check("копия s2 принята с пометкой",
+              "похоже на работу" in page and "Иванов" in page, page[:400])
+        with open(os.path.join(STORE, "реестр.json"), encoding="utf-8") as f:
+            db = json.load(f)
+        sub2 = db["сдачи"].get("t1__s2")
+        check("сдача s2 в реестре", bool(sub2))
+        last = sub2["versions"][-1] if sub2 else {}
+        sim = last.get("похожесть") or []
+        check("похожесть записана", bool(sim) and
+              sim[0].get("fio") == "Иванов И.И." and
+              sim[0].get("процент", 0) >= 60, str(sim)[:200])
 
         # ── импорт пачки преподавателем ──────────────────────────────
         w_s2_auto = make_work("", "Петров П.П.", "П-21")   # ФИО распознается
@@ -260,6 +351,25 @@ def main():
         with open(os.path.join(STORE, "реестр.json"), encoding="utf-8") as f:
             db = json.load(f)
         check("Сидорову записана сдача", "t1__s3" in db["сдачи"])
+
+        # ── преподаватель: несовпадение токена — предупреждение ──────
+        r, page = post_multipart(conn, "/staff/offline/import",
+                                 [("work", "с1_чужтокен.json",
+                                   make_work("s1", "Иванов И.И.",
+                                             token="a" * 24))],
+                                 cookie=staff_ck)
+        page = page.decode("utf-8", "replace")
+        check("импорт с чужим токеном: предупреждение",
+              "токен выдачи не совпадает с выданным" in page and "⚠" in page,
+              page[:400])
+        with open(os.path.join(STORE, "реестр.json"), encoding="utf-8") as f:
+            db = json.load(f)
+        subs1 = db["сдачи"]["t1__s1"]
+        check("работа s1 всё же зачтена", len(subs1["versions"]) >= 5,
+              str(len(subs1["versions"])))
+        check("токен отмечен в версии",
+              (subs1["versions"][-1].get("офлайн") or {}).get("токен")
+              == "токен выдачи не совпадает с выданным")
 
         # подделанная подпись
         bad = make_work("s1", "Иванов И.И.")
@@ -297,6 +407,9 @@ def main():
         page = r.read().decode("utf-8", "replace")
         check("панель /staff/offline", r.status == 200 and
               "Импорт работ" in page and "Бланки .zip" in page)
+        check("панель: разделы защиты", "Возможное списывание" in page
+              and "Токены выдачи" in page and "Петров П.П." in page,
+              page[:200])
 
         ok = all(c for _n, c in checks)
         print()
