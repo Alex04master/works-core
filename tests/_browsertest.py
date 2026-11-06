@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """Реальный браузерный тест бланков: headless Chrome.
 
-Для каждого бланка: копия + обвязка (заполнить поля -> validate ->
-save) -> document.title = RESULT:...; chrome --headless --dump-dom.
+Бланки берутся из выдачи преподавателя (/staff/offline/issue) и из
+предпросмотра анонимного бланка. Для каждого: копия + обвязка (заполнить
+поля -> validate -> save) -> document.title = RESULT:...;
+chrome --headless --dump-dom.
 """
 import http.cookiejar
 import io
@@ -16,11 +18,22 @@ import urllib.parse
 import urllib.request
 import zipfile
 
-ROOT = r"D:\AI\AI-projects\works-core"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "tests", "_browsertest")
 BASE = "http://localhost:8095"
-CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+_CANDIDATES = (
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+)
+CHROME = next((p for p in _CANDIDATES if os.path.exists(p)), "")
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+if not CHROME:
+    print("BROWSER BLANKS SKIP: не найден Chrome/Edge")
+    sys.exit(0)
 
 shutil.rmtree(OUT, ignore_errors=True)
 os.makedirs(OUT)
@@ -50,15 +63,11 @@ post("/_login", {"student": "s1", "next": "/"})
 post("/_staff_login", {"pass": "x"})
 
 blanks = {}
-blanks["student"] = get("/offline/blank/t1")
-zb = fetch_blob("/offline/blanki.zip", {"mode": "all"})
+zb = fetch_blob("/staff/offline/issue", {"task": "t1", "student": "s1"})
 z = zipfile.ZipFile(io.BytesIO(zb))
-name = z.namelist()[0]
-blanks["bulk-zip"] = z.read(name).decode("utf-8-sig")
-zs = fetch_blob("/staff/offline/blanks/l1")
-z2 = zipfile.ZipFile(io.BytesIO(zs))
-name2 = z2.namelist()[0]
-blanks["staff-anon"] = z2.read(name2).decode("utf-8-sig")
+name = [n for n in z.namelist() if n.endswith(".html")][0]
+blanks["issued"] = z.read(name).decode("utf-8")
+blanks["staff-anon"] = get("/offline/blank/t1")
 
 HARNESS = """
 <script>
@@ -69,8 +78,8 @@ window.addEventListener('load',function(){
   var els=document.querySelectorAll('[data-key]');
   for(var i=0;i<els.length;i++){var el=els[i];
     var t=el.getAttribute('data-type');
-    if(t==='file'||t==='firmware'||t==='shlei'||t==='checkboxes'
-       ||t==='radio'||t==='checkbox')continue;
+    if(t==='file'||t==='firmware'){el.setAttribute('data-req','0');continue;}
+    if(t==='shlei'||t==='checkboxes'||t==='radio'||t==='checkbox')continue;
     if(el.tagName==='SELECT'){if(el.options.length>1)el.selectedIndex=1;
       continue;}
     el.value='1';}

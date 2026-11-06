@@ -41,7 +41,7 @@ def wait_port(port, timeout=15):
 
 
 def post(conn, path, fields, cookie=""):
-    body = urllib.parse.urlencode(fields)
+    body = urllib.parse.urlencode(fields, doseq=True)
     conn.request("POST", path, body=body, headers={
         "Content-Type": "application/x-www-form-urlencoded",
         "Cookie": cookie})
@@ -153,15 +153,24 @@ def main():
             return hmac.new(secret, sid.encode("utf-8"),
                             hashlib.sha256).hexdigest()[:16]
 
-        # ── бланк студента ───────────────────────────────────────────
-        conn.request("GET", "/offline/blank/t1", headers={"Cookie": st1_ck})
-        r = conn.getresponse()
-        blank = r.read().decode("utf-8", "replace")
-        check("бланк отдаётся", r.status == 200)
+        # ── выдача бланков преподавателем ────────────────────────────
+        r, zdata = post(conn, "/staff/offline/issue",
+                        {"task": ["t1"], "student": ["s1"]},
+                        cookie=staff_ck)
+        check("выдача: архив отдаётся", r.status == 200 and
+              zdata[:2] == b"PK", "%s %s" % (r.status, zdata[:60]))
+        disp = r.getheader("Content-Disposition") or ""
+        check("выдача: имя архива — zip", "zip" in disp.lower(), disp)
+        zf = zipfile.ZipFile(io.BytesIO(zdata))
+        names = zf.namelist()
+        check("выдача: бланк + README", len(names) == 2 and
+              names[0].endswith(".html") and "README.txt" in names,
+              str(names))
+        blank = zf.read([n for n in names if n.endswith(".html")][0]
+                        ).decode("utf-8", "replace")
         check("бланк: форма сохранения", "Сохранить работу" in blank)
         check("бланк: ФИО подтянуто", "Иванов И.И." in blank, blank[:200])
-        check("бланк: подпись в META", ("\"sig\": \"%s\"" % sig("s1")) in blank
-              or ('"sig": "%s"' % sig("s1")) in blank)
+        check("бланк: подпись в META", '"sig": "%s"' % sig("s1") in blank)
         check("бланк: описание", "Сделайте что-нибудь" in blank)
         check("бланк: поле number", 'data-key="period"' in blank)
         check("бланк: поле file", 'data-type="file"' in blank)
@@ -172,11 +181,18 @@ def main():
         check("бланк: токен в META", len(token1) == 24, token1)
         check("бланк: маркировка видна", "бланк промаркирован" in blank)
 
-        # анонимный бланк: поля ФИО для ввода
-        conn.request("GET", "/offline/blank/t1")
+        # студент больше не может скачать бланк сам
+        conn.request("GET", "/offline/blank/t1", headers={"Cookie": st1_ck})
+        r = conn.getresponse()
+        pno = r.read().decode("utf-8", "replace")
+        check("бланк студенту закрыт", "Сохранить работу" not in pno,
+              pno[:200])
+        # предпросмотр анонимного бланка — преподавателю
+        conn.request("GET", "/offline/blank/t1", headers={"Cookie": staff_ck})
         r = conn.getresponse()
         blank_anon = r.read().decode("utf-8", "replace")
-        check("бланк аноним: ввод ФИО", 'id="bf_fio"' in blank_anon)
+        check("бланк аноним (предпросмотр): ввод ФИО",
+              r.status == 200 and 'id="bf_fio"' in blank_anon, str(r.status))
 
         # ── файл работы (как его собирает JS бланка) ─────────────────
         def make_work(sid, fio, group="П-21", brigade="", fio_field=None,
@@ -273,9 +289,13 @@ def main():
               == 600 and sub["versions"][0]["answers"]["mode"] == "норма")
 
         # ── повторная выдача: старый токен стирается ─────────────────
-        conn.request("GET", "/offline/blank/t1", headers={"Cookie": st1_ck})
-        r = conn.getresponse()
-        blank2 = r.read().decode("utf-8", "replace")
+        r, zdata = post(conn, "/staff/offline/issue",
+                        {"task": ["t1"], "student": ["s1"]},
+                        cookie=staff_ck)
+        zf = zipfile.ZipFile(io.BytesIO(zdata))
+        blank2 = zf.read([n for n in zf.namelist()
+                          if n.endswith(".html")][0]
+                         ).decode("utf-8", "replace")
         m2 = re.search(r'"token": "([0-9a-f]+)"', blank2)
         token2 = m2.group(1) if m2 else ""
         check("токен перевыпущен", len(token2) == 24 and token2 != token1,
@@ -383,19 +403,24 @@ def main():
         check("поддельная подпись отклонена", "подпись работы не совпадает"
               in page, page[:400])
 
-        # ── бланки занятия .zip ──────────────────────────────────────
-        conn.request("GET", "/staff/offline/blanks/l1",
-                     headers={"Cookie": staff_ck})
-        r = conn.getresponse()
-        zdata = r.read()
-        check("бланки: zip", r.status == 200 and zdata[:2] == b"PK")
+        # ── выдача нескольким студентам: архивы «ФИО.zip» ────────────
+        r, zdata = post(conn, "/staff/offline/issue",
+                        {"task": ["t1"], "student": ["s2", "s3"]},
+                        cookie=staff_ck)
+        check("пачка бланков: zip", r.status == 200 and zdata[:2] == b"PK")
         zf = zipfile.ZipFile(io.BytesIO(zdata))
         names = zf.namelist()
-        check("бланки: 1 файл t1", len(names) == 1 and
-              names[0].endswith(".html"), str(names))
-        inner = zf.read(names[0]).decode("utf-8", "replace")
-        check("бланки: внутри бланк задания",
-              "Тестовое задание" in inner and 'id="bf_fio"' in inner)
+        check("пачка бланков: архивы по ФИО",
+              sorted(names) == sorted(["Петров П.П..zip",
+                                       "Сидоров С.С..zip"]), str(names))
+        inner = zipfile.ZipFile(io.BytesIO(zf.read(names[0])))
+        inner_html = inner.read([n for n in inner.namelist()
+                                 if n.endswith(".html")][0]
+                                ).decode("utf-8", "replace")
+        check("внутренний бланк: ФИО и токен",
+              ("Петров П.П." in inner_html or "Сидоров С.С." in inner_html)
+              and re.search(r'"token": "([0-9a-f]{24})"', inner_html),
+              inner_html[:200])
 
         # страница студента и панель преподавателя открываются
         conn.request("GET", "/offline", headers={"Cookie": st1_ck})
@@ -406,7 +431,8 @@ def main():
         r = conn.getresponse()
         page = r.read().decode("utf-8", "replace")
         check("панель /staff/offline", r.status == 200 and
-              "Импорт работ" in page and "Бланки .zip" in page)
+              "Импорт работ" in page and "Выдача бланков" in page,
+              page[:200])
         check("панель: разделы защиты", "Возможное списывание" in page
               and "Токены выдачи" in page and "Петров П.П." in page,
               page[:200])

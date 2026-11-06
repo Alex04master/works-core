@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Полный цикл офлайн-сдачи СЦЕНАРНОГО задания (plan_data обязателен):
-создать задание -> выдать -> бланк -> файл работы -> upload -> сдача
-с планом «[]» и пометкой. PORT из env (по умолчанию 8099)."""
+преподаватель выдаёт бланк -> файл работы -> upload -> сдача с планом «[]»
+и пометкой. PORT из env (по умолчанию 8099)."""
 import glob
 import io
 import json
@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import urllib.parse
+import zipfile
 
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -31,6 +32,12 @@ def curl(*args):
     r = subprocess.run(["curl.exe", "-s"] + list(args),
                        capture_output=True)
     return r.stdout.decode("utf-8", "replace")
+
+
+def curl_raw(*args):
+    r = subprocess.run(["curl.exe", "-s"] + list(args),
+                       capture_output=True)
+    return r.stdout
 
 
 form = ('[{"ключ":"plan_data","тип":"hidden","обязательно":true},'
@@ -55,8 +62,6 @@ if tid:
          "form_json=" + form, "-d", "deadline=",
          BASE + "/staff/edit_task/" + tid)
 # повторное чтение реестра после правки формы
-d = json.load(io.open(glob.glob(os.path.join(STORE, "*.json"))[0],
-                      encoding="utf-8"))
 d = json.load(io.open(glob.glob(os.path.join(STORE, "*.json"))[0], encoding="utf-8"))
 tid = ""
 for t in d["задания"]:
@@ -69,7 +74,14 @@ if not tid:
 curl("-b", "_off_st.txt", "-d", "task=" + tid, "-d", "all=on",
      BASE + "/staff/task_issue")
 
-blank = curl("-b", "_off_ck.txt", BASE + "/offline/blank/" + tid)
+# бланк выдаёт преподаватель: архив «ФИО.zip» со студентом s1
+zraw = curl_raw("-b", "_off_st.txt", "-d", "task=" + tid,
+                "-d", "student=s1", BASE + "/staff/offline/issue")
+need(zraw[:2] == b"PK", "issue zip returned")
+zf = zipfile.ZipFile(io.BytesIO(zraw))
+htmls = [n for n in zf.namelist() if n.endswith(".html")]
+need(len(htmls) == 1, "one blank in zip")
+blank = zf.read(htmls[0]).decode("utf-8", "replace") if htmls else ""
 msig = re.search(r'"sig": "([0-9a-f]+)"', blank)
 mtok = re.search(r'"token": "([0-9a-f]{24})"', blank)
 need(bool(msig) and bool(mtok), "blank: sig + token present")
@@ -102,6 +114,7 @@ if sub:
          "note marks offline submission")
 
 for p in ("_off_st.txt", "_off_ck.txt", "_off_work.json"):
-    os.remove(p)
+    if os.path.exists(p):
+        os.remove(p)
 print("PLANOFF OK" if ok else "PLANOFF FAIL")
 sys.exit(0 if ok else 1)
