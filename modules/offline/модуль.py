@@ -575,19 +575,85 @@ def _rows_table(rows):
     for name, ok, info in rows:
         icon = "✅" if ok else ("⏸" if ok is None else "❌")
         cell = _e(info) if not isinstance(info, dict) else (
-            "сдано: <b>%s</b> · задание «%s» · версия %d%s%s%s" % (
+            "сдано: <b>%s</b> · задание «%s» · версия %d%s%s%s%s" % (
                 _e(info.get("студент", "")), _e(info.get("задание", "")),
                 info.get("версия", 0),
                 " · за бригаду «%s»" % _e(info["бригада"])
                 if info.get("бригада") else "",
                 " · ⚠ токен: %s" % _e(info["warn"]) if info.get("warn") else "",
                 " · ⚠ похоже на работу: %s" % _e(info["похожесть"])
-                if info.get("похожесть") else ""))
+                if info.get("похожесть") else "",
+                ' · <a href="/staff/sub/%s">👁 посмотреть работу</a>'
+                % _e(info["link"]) if info.get("link") else ""))
         out.append('<tr><td style="border:1px solid #dbe4ef;padding:6px 10px">%s'
                    '</td><td style="border:1px solid #dbe4ef;padding:6px 10px">'
                    '%s %s</td></tr>' % (_e(name), icon, cell))
     out.append("</table>")
     return "".join(out)
+
+
+def _staff_works_section(ctx):
+    """Панель «Работы офлайн-сдачи»: всё, что сдано через модуль."""
+    rows = []
+    for sub in ctx.list_submissions():
+        vers = [v for v in (sub.get("versions") or [])
+                if isinstance(v.get("офлайн"), dict)]
+        if not vers:
+            continue
+        ver = vers[-1]
+        sid = sub.get("student", "")
+        tid = sub.get("task", "")
+        stu = ctx.get_student(sid) or {}
+        task = ctx.get_task(tid) or {}
+        key = sub.get("key") or ("%s__%s" % (tid, sid))
+        tok = ver["офлайн"].get("токен") or ""
+        tok_s = ("✔ токен совпадает" if tok == "ok"
+                 else ("⚠ %s" % tok if tok else ""))
+        sim = ver.get("похожесть") or []
+        sim_s = ", ".join("%s (%d%%)" % (m.get("fio", "?"),
+                                         m.get("процент", 0))
+                          for m in sim[:2]) if sim else "—"
+        rows.append((ver.get("time", ""), task.get("title") or tid,
+                     stu.get("fio") or sid, ver.get("n", 0),
+                     key, tok_s, sim_s))
+    rows.sort(reverse=True)
+    if not rows:
+        return ('<div class="task-desc"><h2>📥 Работы офлайн-сдачи</h2>'
+                '<p class="hint">Пока никто не сдал работу через '
+                'офлайн-модуль. Работа студента — это обычная сдача: '
+                'список работ есть на странице задания, просмотр — '
+                'по ссылке «👁».</p></div>')
+    trs = "".join(
+        '<tr><td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
+        '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
+        '<td style="border:1px solid #dbe4ef;padding:6px 10px"><b>%s</b></td>'
+        '<td style="border:1px solid #dbe4ef;padding:6px 10px">v%d</td>'
+        '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
+        '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
+        '<td style="border:1px solid #dbe4ef;padding:6px 10px">'
+        '<a href="/staff/sub/%s/v%d">👁 посмотреть работу</a></td></tr>'
+        % (_e(t), _e(s), _e(f), n, _e(tk), _e(sm), _e(key), n)
+        for (t, s, f, n, key, tk, sm) in rows[:100])
+    return ('<div class="task-desc"><h2>📥 Работы офлайн-сдачи</h2>'
+            '<p class="hint">Показано %d из %d последних. В просмотре — '
+            'ответы формы, файлы работы, история версий и форма вердикта.'
+            '</p>'
+            '<table style="border-collapse:collapse;width:100%%">'
+            '<tr><th style="text-align:left;border:1px solid #dbe4ef;'
+            'padding:6px 10px;background:#eef2f7">Когда</th>'
+            '<th style="text-align:left;border:1px solid #dbe4ef;'
+            'padding:6px 10px;background:#eef2f7">Задание</th>'
+            '<th style="text-align:left;border:1px solid #dbe4ef;'
+            'padding:6px 10px;background:#eef2f7">Студент</th>'
+            '<th style="text-align:left;border:1px solid #dbe4ef;'
+            'padding:6px 10px;background:#eef2f7">Версия</th>'
+            '<th style="text-align:left;border:1px solid #dbe4ef;'
+            'padding:6px 10px;background:#eef2f7">Токен</th>'
+            '<th style="text-align:left;border:1px solid #dbe4ef;'
+            'padding:6px 10px;background:#eef2f7">Похожесть</th>'
+            '<th style="text-align:left;border:1px solid #dbe4ef;'
+            'padding:6px 10px;background:#eef2f7">Просмотр</th></tr>%s'
+            '</table></div>' % (min(100, len(rows)), len(rows), trs))
 
 
 def _staff_sim_section(ctx):
@@ -603,8 +669,8 @@ def _staff_sim_section(ctx):
             b = (ctx.get_student(str(it.get("sid_b") or "")) or {}).get(
                 "fio") or it.get("sid_b") or "?"
             rows.append((str(it.get("когда") or ""), tname, str(a), str(b),
-                         it))
-    rows.sort(reverse=True)
+                         it, tid))
+    rows.sort(key=lambda r: r[0], reverse=True)
     if not rows:
         return ('<div class="task-desc"><h2>⚠️ Возможное списывание</h2>'
                 '<p class="hint">Совпадений работ не обнаружено. Сравнение '
@@ -614,12 +680,16 @@ def _staff_sim_section(ctx):
     trs = "".join(
         '<tr><td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
-        '<td style="border:1px solid #dbe4ef;padding:6px 10px"><b>%s</b></td>'
-        '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
+        '<td style="border:1px solid #dbe4ef;padding:6px 10px">'
+        '<a href="/staff/sub/%s__%s"><b>%s</b></a></td>'
+        '<td style="border:1px solid #dbe4ef;padding:6px 10px">'
+        '<a href="/staff/sub/%s__%s">%s</a></td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">%d%% · %s</td>'
-        '</tr>' % (_e(w), _e(t), _e(a), _e(b), it.get("процент", 0),
-                   _e(it.get("тип", "")))
-        for w, t, a, b, it in rows[:100])
+        '</tr>' % (_e(w), _e(t),
+                   _e(tid2), _e(str(it.get("sid_b") or "")), _e(b),
+                   _e(tid2), _e(str(it.get("sid_a") or "")), _e(a),
+                   it.get("процент", 0), _e(it.get("тип", "")))
+        for w, t, a, b, it, tid2 in rows[:100])
     return ('<div class="task-desc"><h2>⚠️ Возможное списывание</h2>'
             '<p>Найдено пар: %d</p>'
             '<table style="border-collapse:collapse;width:100%%">'
@@ -644,8 +714,9 @@ def _staff_tokens_section(ctx):
     if not kv:
         return ('<div class="task-desc"><h2>🔐 Токены выдачи бланков</h2>'
                 '<p class="hint">Бланки ещё не выдавались. Токен вшивается '
-                'в бланк при скачивании со страницы задания; работа без '
-                'своего токена от студента не принимается.</p></div>')
+                'в бланк при выдаче (форма «📤 Выдача бланков» выше); '
+                'работа без своего токена от студента не принимается.'
+                '</p></div>')
     rows = []
     for k, rec in kv.items():
         sid, _sep, tid = k.partition("|")
@@ -664,18 +735,21 @@ def _staff_tokens_section(ctx):
                 str(last.get("time", ""))[:16].replace("T", " "))
         else:
             state, when_sub = "— работа не сдана", "—"
+        view = ('<a href="/staff/sub/%s__%s">👁 посмотреть</a>'
+                % (_e(tid), _e(sid))) if vers else "—"
         rows.append((rec.get("выдан") or 0, task.get("title") or tid,
                      stu.get("fio") or sid, _fmt_ts(rec.get("выдан")),
-                     when_sub, state))
+                     when_sub, state, view))
     rows.sort(reverse=True)
     trs = "".join(
         '<tr><td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
+        '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td></tr>'
-        % (_e(t), _e(s), _e(i), _e(c), _e(st))
-        for _ts, t, s, i, c, st in rows[:100])
+        % (_e(t), _e(s), _e(i), _e(c), _e(st), v)
+        for _ts, t, s, i, c, st, v in rows[:100])
     return ('<div class="task-desc"><h2>🔐 Токены выдачи бланков</h2>'
             '<table style="border-collapse:collapse;width:100%%">'
             '<tr><th style="text-align:left;border:1px solid #dbe4ef;'
@@ -687,9 +761,11 @@ def _staff_tokens_section(ctx):
             '<th style="text-align:left;border:1px solid #dbe4ef;'
             'padding:6px 10px;background:#eef2f7">Работа сдана</th>'
             '<th style="text-align:left;border:1px solid #dbe4ef;'
-            'padding:6px 10px;background:#eef2f7">Токен</th></tr>%s</table>'
-            '<p class="hint">При скачивании бланка старый токен стирается '
-            'и выдаётся новый: действителен только последний. '
+            'padding:6px 10px;background:#eef2f7">Токен</th>'
+            '<th style="text-align:left;border:1px solid #dbe4ef;'
+            'padding:6px 10px;background:#eef2f7">Просмотр</th></tr>%s'
+            '</table><p class="hint">При выдаче бланка старый токен '
+            'стирается и выдаётся новый: действителен только последний. '
             'Показано %d из %d записей.</p></div>'
             % (trs, min(100, len(rows)), len(rows)))
 
@@ -1112,6 +1188,8 @@ def _do_submit(ctx, task, payload, sid, for_staff, handler, warn=""):
         ver["похожесть"] = sim
         info["похожесть"] = ", ".join(
             "%s (%d%%)" % (m["fio"], m["процент"]) for m in sim[:3])
+    if for_staff and sub.get("key"):
+        info["link"] = sub["key"]
     if warn:
         info["warn"] = warn
     ctx._core.store.save()
@@ -1253,6 +1331,7 @@ def register(ctx):
             '<p><label>Файлы работ: <input type="file" name="work" multiple '
             'accept=".json,application/json" required></label></p>'
             '<p><button>📥 Импортировать</button></p></form>'
+            + _staff_works_section(ctx)
             + _staff_sim_section(ctx) + _staff_tokens_section(ctx))
 
     @ctx.add_route("GET", "/staff/offline", access="staff")

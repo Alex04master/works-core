@@ -436,6 +436,17 @@ def main():
         check("панель: разделы защиты", "Возможное списывание" in page
               and "Токены выдачи" in page and "Петров П.П." in page,
               page[:200])
+        check("панель: работы офлайн", "Работы офлайн-сдачи" in page
+              and "посмотреть работу" in page, page[:200])
+
+        # ── просмотр работы студента преподавателем ──────────────────
+        conn.request("GET", "/staff/sub/t1__s1", headers={"Cookie": staff_ck})
+        r = conn.getresponse()
+        vpage = r.read().decode("utf-8", "replace")
+        check("просмотр работы: страница", r.status == 200 and
+              "Иванов И.И." in vpage, str(r.status))
+        check("просмотр работы: ответы и файлы",
+              "Решение" in vpage and "схема.robxsim" in vpage, vpage[:200])
 
         ok = all(c for _n, c in checks)
         print()
