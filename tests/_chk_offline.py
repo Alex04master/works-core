@@ -89,7 +89,8 @@ def main():
     # ── сид реестра: курс, занятие, задание с формой, 3 студента ────
     reg = {
         "версия": 3,
-        "курсы": [{"id": "c1", "title": "Тестовый курс", "группы": []}],
+        "курсы": [{"id": "c1", "title": "Тестовый курс",
+                   "студенты": ["s1", "s2", "s3"], "группы": []}],
         "занятия": [{"id": "l1", "course": "c1", "title": "Занятие 1",
                      "материалы": []}],
         "задания": [{
@@ -438,6 +439,15 @@ def main():
               page[:200])
         check("панель: работы офлайн", "Работы офлайн-сдачи" in page
               and "посмотреть работу" in page, page[:200])
+        check("панель: селектор курса", 'id="wc-course"' in page and
+              '<option value="c1">' in page and "все курсы" in page,
+              page[:200])
+        check("панель: фильтр — строки и студенты с курсом",
+              '<tr data-wcf="c1">' in page and
+              'data-wcf="c1"><input type="checkbox" name="student" '
+              'value="s1"' in page, page[:300])
+        check("панель: группы заданий по курсу",
+              '<div data-wcf="c1">' in page, page[:300])
 
         # ── просмотр работы студента преподавателем ──────────────────
         conn.request("GET", "/staff/sub/t1__s1", headers={"Cookie": staff_ck})

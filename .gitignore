@@ -14,6 +14,7 @@ dist/
 /_*
 _temp/
 tests/_tmp_*/
+tests/_browsertest/
 
 # OS
 Thumbs.db

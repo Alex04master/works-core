@@ -585,9 +585,11 @@ def _rows_table(rows):
                 if info.get("похожесть") else "",
                 ' · <a href="/staff/sub/%s">👁 посмотреть работу</a>'
                 % _e(info["link"]) if info.get("link") else ""))
-        out.append('<tr><td style="border:1px solid #dbe4ef;padding:6px 10px">%s'
+        cid = info.get("курс", "") if isinstance(info, dict) else ""
+        out.append('<tr data-wcf="%s"><td style="border:1px solid #dbe4ef;'
+                   'padding:6px 10px">%s'
                    '</td><td style="border:1px solid #dbe4ef;padding:6px 10px">'
-                   '%s %s</td></tr>' % (_e(name), icon, cell))
+                   '%s %s</td></tr>' % (_e(cid), _e(name), icon, cell))
     out.append("</table>")
     return "".join(out)
 
@@ -615,7 +617,7 @@ def _staff_works_section(ctx):
                           for m in sim[:2]) if sim else "—"
         rows.append((ver.get("time", ""), task.get("title") or tid,
                      stu.get("fio") or sid, ver.get("n", 0),
-                     key, tok_s, sim_s))
+                     key, tok_s, sim_s, _task_course(ctx, tid)))
     rows.sort(reverse=True)
     if not rows:
         return ('<div class="task-desc"><h2>📥 Работы офлайн-сдачи</h2>'
@@ -624,7 +626,7 @@ def _staff_works_section(ctx):
                 'список работ есть на странице задания, просмотр — '
                 'по ссылке «👁».</p></div>')
     trs = "".join(
-        '<tr><td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
+        '<tr data-wcf="%s"><td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px"><b>%s</b></td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">v%d</td>'
@@ -632,8 +634,8 @@ def _staff_works_section(ctx):
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">'
         '<a href="/staff/sub/%s/v%d">👁 посмотреть работу</a></td></tr>'
-        % (_e(t), _e(s), _e(f), n, _e(tk), _e(sm), _e(key), n)
-        for (t, s, f, n, key, tk, sm) in rows[:100])
+        % (cid, _e(t), _e(s), _e(f), n, _e(tk), _e(sm), _e(key), n)
+        for (t, s, f, n, key, tk, sm, cid) in rows[:100])
     return ('<div class="task-desc"><h2>📥 Работы офлайн-сдачи</h2>'
             '<p class="hint">Показано %d из %d последних. В просмотре — '
             'ответы формы, файлы работы, история версий и форма вердикта.'
@@ -669,7 +671,7 @@ def _staff_sim_section(ctx):
             b = (ctx.get_student(str(it.get("sid_b") or "")) or {}).get(
                 "fio") or it.get("sid_b") or "?"
             rows.append((str(it.get("когда") or ""), tname, str(a), str(b),
-                         it, tid))
+                         it, tid, _task_course(ctx, tid)))
     rows.sort(key=lambda r: r[0], reverse=True)
     if not rows:
         return ('<div class="task-desc"><h2>⚠️ Возможное списывание</h2>'
@@ -678,18 +680,18 @@ def _staff_sim_section(ctx):
                 'похожесть текста (шинглы слов, порог %d%%) и полностью '
                 'идентичные файлы.</p></div>' % round(SIM_MIN * 100))
     trs = "".join(
-        '<tr><td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
+        '<tr data-wcf="%s"><td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">'
         '<a href="/staff/sub/%s__%s"><b>%s</b></a></td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">'
         '<a href="/staff/sub/%s__%s">%s</a></td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">%d%% · %s</td>'
-        '</tr>' % (_e(w), _e(t),
+        '</tr>' % (cid, _e(w), _e(t),
                    _e(tid2), _e(str(it.get("sid_b") or "")), _e(b),
                    _e(tid2), _e(str(it.get("sid_a") or "")), _e(a),
                    it.get("процент", 0), _e(it.get("тип", "")))
-        for w, t, a, b, it, tid2 in rows[:100])
+        for w, t, a, b, it, tid2, cid in rows[:100])
     return ('<div class="task-desc"><h2>⚠️ Возможное списывание</h2>'
             '<p>Найдено пар: %d</p>'
             '<table style="border-collapse:collapse;width:100%%">'
@@ -739,17 +741,19 @@ def _staff_tokens_section(ctx):
                 % (_e(tid), _e(sid))) if vers else "—"
         rows.append((rec.get("выдан") or 0, task.get("title") or tid,
                      stu.get("fio") or sid, _fmt_ts(rec.get("выдан")),
-                     when_sub, state, view))
+                     when_sub, state, view,
+                     _task_course(ctx, tid)))
     rows.sort(reverse=True)
     trs = "".join(
-        '<tr><td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
+        '<tr data-wcf="%s"><td style="border:1px solid #dbe4ef;'
+        'padding:6px 10px">%s</td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td>'
         '<td style="border:1px solid #dbe4ef;padding:6px 10px">%s</td></tr>'
-        % (_e(t), _e(s), _e(i), _e(c), _e(st), v)
-        for _ts, t, s, i, c, st, v in rows[:100])
+        % (cid, _e(t), _e(s), _e(i), _e(c), _e(st), v)
+        for _ts, t, s, i, c, st, v, cid in rows[:100])
     return ('<div class="task-desc"><h2>🔐 Токены выдачи бланков</h2>'
             '<table style="border-collapse:collapse;width:100%%">'
             '<tr><th style="text-align:left;border:1px solid #dbe4ef;'
@@ -788,6 +792,15 @@ def _prune_pending(ctx):
         for k in stale:
             pend.pop(k, None)
         ctx.kv_save("pending", pend)
+
+
+def _task_course(ctx, tid):
+    """Курс задания (по его занятию); «» если не найден."""
+    task = ctx.get_task(tid or "")
+    if not task:
+        return ""
+    lesson = ctx.get_lesson(task.get("lesson", ""))
+    return (lesson or {}).get("course", "")
 
 
 # ── Токены выдачи бланков (защита от списывания) ─────────────────────────
@@ -971,29 +984,42 @@ def _issue_form(ctx):
         ls = ctx.list_lessons(c["id"])
         if not ls:
             continue
-        trows.append('<p style="margin:10px 0 4px"><b>%s</b></p>'
-                     % _e(c.get("title", "")))
+        grp = ['<p style="margin:10px 0 4px"><b>%s</b></p>'
+               % _e(c.get("title", ""))]
         for l in ls:
             ts = ctx.list_tasks(l["id"])
             if not ts:
                 continue
-            trows.append('<p class="hint" style="margin:6px 0 2px">%s</p>'
-                         % _e(l.get("title", "")))
+            grp.append('<p class="hint" style="margin:6px 0 2px">%s</p>'
+                       % _e(l.get("title", "")))
             for t in ts:
-                trows.append('<label class="opt" style="display:block">'
-                             '<input type="checkbox" name="task" '
-                             'value="%s"> %s</label>'
-                             % (_e(t["id"]), _e(t.get("title", ""))))
+                grp.append('<label class="opt" style="display:block">'
+                           '<input type="checkbox" name="task" '
+                           'value="%s"> %s</label>'
+                           % (_e(t["id"]), _e(t.get("title", ""))))
+        trows.append('<div data-wcf="%s">%s</div>'
+                     % (_e(c["id"]), "".join(grp)))
     srows = []
+    # Студент относится к курсу, где записан явно, и ко всем «открытым»
+    # курсам (без явного списка студентов — туда можно любого).
+    open_c = [c["id"] for c in ctx.list_courses()
+              if not (c.get("студенты") or [])]
+    enroll = {}
+    for c in ctx.list_courses():
+        for sid in (c.get("студенты") or []):
+            if sid:
+                enroll.setdefault(sid, set()).add(c["id"])
     for s in sorted(ctx.list_students(), key=lambda x: x.get("fio", "")):
         bits = [_e(s.get("fio", "?"))]
         if s.get("group"):
             bits.append("гр. %s" % _e(s["group"]))
         if (s.get("бригада") or "").strip():
             bits.append("бригада «%s»" % _e(s["бригада"]))
-        srows.append('<label class="opt" style="display:block">'
+        cs = " ".join(sorted(enroll.get(s["id"], set()) | set(open_c)))
+        srows.append('<label class="opt" style="display:block" '
+                     'data-wcf="%s">'
                      '<input type="checkbox" name="student" value="%s"> %s'
-                     '</label>' % (_e(s["id"]), " · ".join(bits)))
+                     '</label>' % (cs, _e(s["id"]), " · ".join(bits)))
     if not trows:
         trows.append('<p class="hint">Нет заданий.</p>')
     if not srows:
@@ -1009,7 +1035,9 @@ def _issue_form(ctx):
         'предыдущий бланк перестаёт действовать.</p>'
         '<script>function wcTog(box,cls){var on=box.checked,'
         'els=document.querySelectorAll(\'#issue-form input[name="\'+cls'
-        '+\']");for(var i=0;i<els.length;i++)els[i].checked=on}</script>'
+        '+\']");for(var i=0;i<els.length;i++){var lab=els[i].closest'
+        '(\'label\');if(lab&&lab.offsetParent===null)continue;'
+        'els[i].checked=on}}</script>'
         '<fieldset style="border:1px solid #dbe4ef;border-radius:10px;'
         'padding:10px;max-height:260px;overflow:auto">'
         '<legend><b>Задания</b> · <label class="hint"><input type="checkbox" '
@@ -1175,7 +1203,8 @@ def _do_submit(ctx, task, payload, sid, for_staff, handler, warn=""):
     versions = sub.get("versions") or []
     ver = versions[-1] if versions else {}
     info = {"студент": stu.get("fio", sid), "задание": task.get("title", ""),
-            "версия": ver.get("n", len(versions)), "бригада": brigade}
+            "версия": ver.get("n", len(versions)), "бригада": brigade,
+            "курс": _task_course(ctx, task.get("id", ""))}
 
     # Маркировка версии + детект сходства (защита от списывания).
     rec = _issued_rec(ctx, sid, task.get("id", "")) or {}
@@ -1319,8 +1348,33 @@ def register(ctx):
 
     # ── Панель преподавателя ─────────────────────────────────────────
     def _staff_home_body(err_html):
+        courses = ctx.list_courses()
+        sel = ""
+        if courses:
+            opts = ('<option value="">— все курсы —</option>' + "".join(
+                '<option value="%s">%s</option>'
+                % (_e(c["id"]), _e(c.get("title", "")))
+                for c in courses))
+            sel = ('<div class="staff-card"><b>📚 Курс:</b> '
+                   '<select id="wc-course" onchange="wcCourse()">'
+                   + opts + '</select> '
+                   '<span class="hint">фильтрует списки на странице: '
+                   'задания, студенты, работы, токены, списывание. '
+                   'Скрытое снимается с выдачи.</span>'
+                   '<script>function wcCourse(){'
+                   "var v=document.getElementById('wc-course').value||'';"
+                   'var els=document.querySelectorAll("[data-wcf]");'
+                   "for(var i=0;i<els.length;i++){var el=els[i];"
+                   "var cs=(el.getAttribute('data-wcf')||'')"
+                   '.split(/\\s+/).filter(Boolean);'
+                   "var show=!v||!cs.length||cs.indexOf(v)>=0;"
+                   "el.style.display=show?'':'none';"
+                   "if(!show){var inp=el.querySelectorAll"
+                   "('input[type=checkbox]');"
+                   "for(var j=0;j<inp.length;j++)inp[j].checked=false;"
+                   '}}}</script></div>')
         return (
-            err_html + _issue_form(ctx) +
+            err_html + sel + _issue_form(ctx) +
             '<form method="post" action="/staff/offline/import" '
             'enctype="multipart/form-data" class="staff-card">'
             '<p><b>Импорт работ</b> — файлы работ (.json), полученные из '
