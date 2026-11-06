@@ -444,10 +444,19 @@ def main():
               page[:200])
         check("панель: фильтр — строки и студенты с курсом",
               '<tr data-wcf="c1">' in page and
-              'data-wcf="c1"><input type="checkbox" name="student" '
-              'value="s1"' in page, page[:300])
+              'data-wcf="c1" data-fio="Иванов И.И." data-grp="П-21">'
+              '<input type="checkbox" name="student" value="s1"' in page,
+              page[:300])
         check("панель: группы заданий по курсу",
               '<div data-wcf="c1">' in page, page[:300])
+        check("панель: поиск по ФИО и фильтр группы",
+              'id="wc-sfio"' in page and 'id="wc-sgrp"' in page and
+              'id="wc-scount"' in page and
+              '<option value="П-21">' in page and
+              '<option value="П-22">' in page, page[:300])
+        check("панель: метки ФИО/группа на студентах",
+              'data-fio="Сидоров С.С." data-grp="П-22"' in page and
+              'data-fio="Петров П.П." data-grp="П-21"' in page, page[:300])
 
         # ── просмотр работы студента преподавателем ──────────────────
         conn.request("GET", "/staff/sub/t1__s1", headers={"Cookie": staff_ck})

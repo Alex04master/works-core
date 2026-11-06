@@ -1017,13 +1017,20 @@ def _issue_form(ctx):
             bits.append("бригада «%s»" % _e(s["бригада"]))
         cs = " ".join(sorted(enroll.get(s["id"], set()) | set(open_c)))
         srows.append('<label class="opt" style="display:block" '
-                     'data-wcf="%s">'
+                     'data-wcf="%s" data-fio="%s" data-grp="%s">'
                      '<input type="checkbox" name="student" value="%s"> %s'
-                     '</label>' % (cs, _e(s["id"]), " · ".join(bits)))
+                     '</label>' % (cs, _e(s.get("fio", "")),
+                                   _e(s.get("group", "")), _e(s["id"]),
+                                   " · ".join(bits)))
     if not trows:
         trows.append('<p class="hint">Нет заданий.</p>')
     if not srows:
         srows.append('<p class="hint">Нет студентов.</p>')
+    grps = sorted({s.get("group", "").strip()
+                   for s in ctx.list_students()
+                   if (s.get("group") or "").strip()})
+    grp_opts = ('<option value="">все группы</option>' + "".join(
+        '<option value="%s">%s</option>' % (_e(g), _e(g)) for g in grps))
     return (
         '<form method="post" action="/staff/offline/issue" id="issue-form" '
         'class="staff-card">'
@@ -1047,10 +1054,14 @@ def _issue_form(ctx):
         'padding:10px;max-height:260px;overflow:auto;margin-top:10px">'
         '<legend><b>Студенты</b> · <label class="hint"><input '
         'type="checkbox" onchange="wcTog(this,\'student\')"> '
-        'все</label></legend>'
+        'все</label><span id="wc-scount"></span></legend>'
+        '<p style="margin:6px 0">'
+        '<input type="text" id="wc-sfio" placeholder="🔍 ФИО студента…" '
+        'oninput="wcStuFilter()" style="max-width:200px"> '
+        '<select id="wc-sgrp" onchange="wcStuFilter()">%s</select></p>'
         '%s</fieldset>'
         '<p style="margin-top:10px"><button>⬇️ Скачать бланки</button></p>'
-        '</form>' % ("".join(trows), "".join(srows)))
+        '</form>' % ("".join(trows), grp_opts, "".join(srows)))
 
 
 # ── Разбор файла работы ──────────────────────────────────────────────────
@@ -1361,18 +1372,49 @@ def register(ctx):
                    '<span class="hint">фильтрует списки на странице: '
                    'задания, студенты, работы, токены, списывание. '
                    'Скрытое снимается с выдачи.</span>'
-                   '<script>function wcCourse(){'
-                   "var v=document.getElementById('wc-course').value||'';"
-                   'var els=document.querySelectorAll("[data-wcf]");'
-                   "for(var i=0;i<els.length;i++){var el=els[i];"
+                   '<script>var wcPrevC=null;'
+                   'function wcApply(){'
+                   "var sel=document.getElementById('wc-course');"
+                   "var v=sel?(sel.value||''):'';"
+                   'var cCh=(wcPrevC!==v);wcPrevC=v;'
+                   'var i,els=document.querySelectorAll("[data-wcf]");'
+                   "for(i=0;i<els.length;i++){var el=els[i];"
+                   'if(el.tagName==="LABEL"&&el.hasAttribute("data-fio"))'
+                   'continue;'
                    "var cs=(el.getAttribute('data-wcf')||'')"
                    '.split(/\\s+/).filter(Boolean);'
                    "var show=!v||!cs.length||cs.indexOf(v)>=0;"
                    "el.style.display=show?'':'none';"
                    "if(!show){var inp=el.querySelectorAll"
                    "('input[type=checkbox]');"
-                   "for(var j=0;j<inp.length;j++)inp[j].checked=false;"
-                   '}}}</script></div>')
+                   "for(var j=0;j<inp.length;j++)inp[j].checked=false;}}"
+                   "var q=(document.getElementById('wc-sfio')?"
+                   "document.getElementById('wc-sfio').value:'')"
+                   '.toLowerCase();'
+                   "var g=document.getElementById('wc-sgrp')?"
+                   "document.getElementById('wc-sgrp').value:'';"
+                   "var stu=document.querySelectorAll('label[data-fio]');"
+                   'var vis=0;'
+                   'for(i=0;i<stu.length;i++){var lab=stu[i];'
+                   "var cs=(lab.getAttribute('data-wcf')||'')"
+                   '.split(/\\s+/).filter(Boolean);'
+                   "var show=!v||!cs.length||cs.indexOf(v)>=0;"
+                   "if(show&&q&&(lab.getAttribute('data-fio')||'')"
+                   '.toLowerCase().indexOf(q)<0)show=false;'
+                   "if(show&&g&&(lab.getAttribute('data-grp')||'')!==g)"
+                   'show=false;'
+                   "lab.style.display=show?'':'none';"
+                   'if(show)vis++;'
+                   'else if(cCh){var inp=lab.querySelectorAll'
+                   "('input[type=checkbox]');"
+                   'for(var j=0;j<inp.length;j++)inp[j].checked=false;}}'
+                   "var sc=document.getElementById('wc-scount');"
+                   'if(sc)sc.textContent='
+                   '(q||g||v)?'
+                   '(" · показано "+vis+" из "+stu.length):"";'
+                   '}'
+                   'function wcCourse(){wcApply()}'
+                   'function wcStuFilter(){wcApply()}</script></div>')
         return (
             err_html + sel + _issue_form(ctx) +
             '<form method="post" action="/staff/offline/import" '
