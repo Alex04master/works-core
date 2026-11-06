@@ -13,6 +13,7 @@ dist/
 # Temp / test (только в корне; tests/ отслеживается)
 /_*
 _temp/
+tests/_tmp_*/
 
 # OS
 Thumbs.db
