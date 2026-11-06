@@ -1042,7 +1042,7 @@ def _issue_form(ctx):
         'предыдущий бланк перестаёт действовать.</p>'
         '<script>function wcTog(box,cls){var on=box.checked,'
         'els=document.querySelectorAll(\'#issue-form input[name="\'+cls'
-        '+\']");for(var i=0;i<els.length;i++){var lab=els[i].closest'
+        '+\'"]\');for(var i=0;i<els.length;i++){var lab=els[i].closest'
         '(\'label\');if(lab&&lab.offsetParent===null)continue;'
         'els[i].checked=on}}</script>'
         '<fieldset style="border:1px solid #dbe4ef;border-radius:10px;'

@@ -457,6 +457,18 @@ def main():
         check("панель: метки ФИО/группа на студентах",
               'data-fio="Сидоров С.С." data-grp="П-22"' in page and
               'data-fio="Петров П.П." data-grp="П-21"' in page, page[:300])
+        # JS всех инлайн-скриптов страницы синтаксически корректен
+        # (регрессия: сломанный wcTog ломал «все» в «Выдаче бланков»)
+        _js = "\n;\n".join(
+            m.group(1) for m in
+            re.finditer(r"<script>(.*?)</script>", page, re.S))
+        _pjs = os.path.join(STORE, "_panel_scripts.js")
+        with open(_pjs, "w", encoding="utf-8") as f:
+            f.write(_js)
+        _rn = subprocess.run(["node", "--check", _pjs], capture_output=True)
+        check("панель: JS синтаксис (node --check)", _rn.returncode == 0,
+              _rn.stderr.decode("utf-8", "replace")[:300])
+        os.remove(_pjs)
 
         # ── просмотр работы студента преподавателем ──────────────────
         conn.request("GET", "/staff/sub/t1__s1", headers={"Cookie": staff_ck})
