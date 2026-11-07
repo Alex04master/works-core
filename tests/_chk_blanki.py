@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Проверка офлайн-модуля в smoke: бланк (JS без двойного <script>,
-node --check), страница «Бланки», пачечное скачивание (.zip)."""
+"""Проверка офлайн-модуля (модель 1.4.0: бланки выдаёт преподаватель):
+предпросмотр бланка, «Выдача бланков» (архивы «ФИО.zip» с токенами),
+студенческая страница загрузки. JS бланков — node --check."""
 import glob
 import http.cookiejar
 import io
-import json
 import os
 import re
 import subprocess
@@ -31,6 +31,14 @@ def post(p, fields):
         return r.read().decode("utf-8", "replace")
 
 
+def blob(p, fields=None):
+    data = (fields.encode() if isinstance(fields, str)
+            else urllib.parse.urlencode(fields).encode())
+    with op.open(BASE + p, data) as r:
+        return r.read()
+
+
+op.open(BASE + "/_staff_login", b"pass=x").read()
 op.open(BASE + "/_login", urllib.parse.urlencode(
     {"student": "s1", "next": "/"}).encode()).read()
 
@@ -43,47 +51,56 @@ def need(cond, msg):
     ok = ok and bool(cond)
 
 
-need("offline/blank" in get("/task/t1"), "blank link on task page")
+# 1) панель: выдача бланков
+pg = get("/staff/offline")
+need('action="/staff/offline/issue"' in pg and "wcTog" in pg,
+     "panel: issue form present")
+need("offline/import" in pg, "panel: import form present")
+
+# 2) предпросмотр анонимного бланка (staff)
 blank = get("/offline/blank/t1")
-need("<script><script>" not in blank and "</script></script>" not in blank,
-     "blank: no double script tag")
+need("<script><script>" not in blank, "staff blank: no double script")
 m = re.search(r"<script>(.*?)</script>", blank, re.S)
 need(bool(m) and "function save(" in (m.group(1) if m else ""),
-     "blank: save() in single script")
-p = os.path.join("_blank_tmp.js")
-with open(p, "w", encoding="utf-8") as f:
+     "staff blank: save() present")
+with open("_bt.js", "w", encoding="utf-8") as f:
     f.write(m.group(1) if m else "")
-r = subprocess.run(["node", "--check", p], capture_output=True)
-os.remove(p)
-need(r.returncode == 0, "blank: node --check JS syntax")
+r = subprocess.run(["node", "--check", "_bt.js"], capture_output=True)
+os.remove("_bt.js")
+need(r.returncode == 0, "staff blank: node --check")
 
-pg = get("/offline/blanki")
-need("/offline/blanki.zip" in pg and 'name="sel"' in pg,
-     "blanki page: form + checkboxes")
-need('href="/offline/blanki"' in get("/task/t1"), "nav button «Бланки»")
-
-req = urllib.request.Request(
-    BASE + "/offline/blanki.zip",
-    data=urllib.parse.urlencode({"mode": "all"}).encode())
-with op.open(req) as r:
-    blob = r.read()
-    cd = r.headers.get("Content-Disposition", "")
-need(blob[:2] == b"PK" and "attachment" in cd, "blanki zip downloaded")
-z = zipfile.ZipFile(io.BytesIO(blob))
+# 3) выдача бланков: два студента, одно задание
+zb = blob("/staff/offline/issue", "task=t1&student=s1&student=s2")
+z = zipfile.ZipFile(io.BytesIO(zb))
 names = z.namelist()
-need(len(names) >= 2, "zip: >= 2 blanks")
-allok = True
+need(len(names) == 2 and all(n.endswith(".zip") for n in names),
+     "issue: two per-student zips (%s)" % ", ".join(names[:2]))
+inner_ok = True
 for n in names:
-    h = z.read(n).decode("utf-8-sig")
+    expected = n[:-4]
+    z2 = zipfile.ZipFile(io.BytesIO(z.read(n)))
+    inner = [x for x in z2.namelist() if x.endswith(".html")]
+    if not inner:
+        inner_ok = False
+        continue
+    h = z2.read(inner[0]).decode("utf-8")
     if ("<script><script>" in h or "function save(" not in h
-            or not re.search(r'"token": "[0-9a-f]{24}"', h)):
-        allok = False
-need(allok, "zip: blanks valid (save + token, no double script)")
+            or not re.search(r'"token": "[0-9a-f]{24}"', h)
+            or not re.search(r'"sig": "[0-9a-f]+"', h)
+            or expected not in h):
+        inner_ok = False
+need(inner_ok, "issue: personal blanks valid (save+token+sig+fio)")
+if names:
+    z2 = zipfile.ZipFile(io.BytesIO(z.read(names[0])))
+    inner = [x for x in z2.namelist() if x.endswith(".html")][0]
+    with open("_bt.js", "w", encoding="utf-8") as f:
+        f.write(re.search(r"<script>(.*?)</script>",
+                          z2.read(inner).decode("utf-8"), re.S).group(1))
+    r = subprocess.run(["node", "--check", "_bt.js"], capture_output=True)
+    os.remove("_bt.js")
+    need(r.returncode == 0, "issue blank: node --check")
 
-# после скачивания бланков: работа без токена не принимается — уже
-# покрывает авторский _chk_offline.py; здесь проверяем страницу загрузки.
-need("offline/upload" in get("/offline"), "upload page intact")
-
-# уборка временных токенов не нужна — тестовый store пересоздаётся
+# 4) студентская страница загрузки
+need("/offline/upload" in get("/offline"), "student upload page intact")
 print("BLANKI OK" if ok else "BLANKI FAIL")
 sys.exit(0 if ok else 1)
