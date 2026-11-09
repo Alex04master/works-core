@@ -411,6 +411,10 @@ try {
   # ---- simulator embed (velxio) ----
   python -X utf8 tests\_chk_sim.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   simulator embed' } else { Write-Output 'FAIL simulator embed'; $script:fail++ }
+
+  # ---- anti-plagiarism + AI-text control ----
+  python -X utf8 tests\_chk_plag.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   antiplag control' } else { Write-Output 'FAIL antiplag'; $script:fail++ }
 } finally {
   Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 }
