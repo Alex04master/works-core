@@ -60,11 +60,12 @@ def register(ctx):
     def my_page(handler, params):
         sid = handler._student()
         stu = ctx.get_student(sid) or {}
-        brig = (stu.get("бригада", "") or "").strip()
         sections = ""
         for c in ctx.list_courses():
             if not ctx.can_access(c["id"], sid):
                 continue
+            brig = ((stu.get("бригада", "") or "").strip()
+                    if ctx.brigades_enabled(c["id"]) else "")
             blocks = ""
             for l in ctx.list_lessons(c["id"]):
                 rows = ""

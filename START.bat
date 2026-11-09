@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 rem WORKS-CORE — запуск двойным кликом. Порт можно задать: START.bat 8090
 cd /d "%~dp0"
 set "PY=python"
@@ -8,10 +9,11 @@ if "%PORT%"=="" set "PORT=8080"
 echo ============================================================
 echo    WORKS-CORE
 echo    Студенты:  http://localhost:%PORT%/
-echo    Панель:    http://localhost:%PORT%/staff
+echo    Панель:      http://localhost:%PORT%/staff
+echo    Симулятор:  http://localhost:5173/ (velxio)
 echo    Остановка: Ctrl+C
 echo ============================================================
-%PY% -X utf8 server.py --port %PORT%
+%PY% -X utf8 server.py --port %PORT% --sim
 if errorlevel 1 (
   echo.
   echo  ** Ошибка. Нужен Python 3.10+ ; порт занят?  START.bat 8090

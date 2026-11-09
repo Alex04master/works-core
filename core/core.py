@@ -140,6 +140,18 @@ class Events:
     def on(self, name, fn, mod_id=""):
         self._hooks.setdefault(name, []).append((mod_id, fn))
 
+    def remove_mod(self, mod_id):
+        """Снять все подписки модуля (горячая перезагрузка).
+
+        Списки пересоздаются, а не мутируют: параллельный запрос
+        может идти по старому списку - он безопасно догрузит свою
+        итерацию.
+        """
+        for k in list(self._hooks):
+            self._hooks[k] = [h for h in self._hooks[k]
+                              if h[0] != mod_id]
+        self.broken.pop(mod_id, None)
+
     def run(self, name, **kw):
         """Зовёт всех подписчиков события. Возвращает список результатов."""
         results = []
@@ -247,7 +259,13 @@ DND_JS = """<script>
       if(ev==='drop'&&e.dataTransfer&&e.dataTransfer.files)
         add(e.dataTransfer.files)})});
   inp.addEventListener('change',function(){
-    if(inp.files.length)add(inp.files);inp.value='';});
+    // Файлы копируются в массив ДО сброса inp.value='':
+    // сброс ПОСЛЕ add() стирал бы то, что sync() записал в поле
+    // (чип на экране есть, а поле пустое - «файл не прикрепляется»).
+    var picked=Array.prototype.slice.call(inp.files);
+    inp.value='';
+    if(picked.length)add(picked);
+  });
 })();
 </script>"""
 
@@ -441,6 +459,10 @@ class Core:
         self.fields = {}       # расширенные типы полей от модулей
         self.pending_routes = []  # маршруты от модулей, регистрируются после создания сервера
         self._module_states = self._load_module_states()
+        self.live_router = None  # роутер живого сервера (CI)
+        self._mod_names = {}  # id модуля -> имя последнего импорта
+        self._mod_gen = {}    # id -> счётчик поколений импорта
+        self.mods_dir = ""    # каталог модулей (заполняет server.py)
 
     # ── ТРИ ОСНОВНЫЕ ФУНКЦИИ ──────────────────────────────────────────
 
@@ -495,6 +517,15 @@ class Core:
         _lesson = self._get("занятия", task.get("lesson", ""))
         if _lesson and not self.can_access(_lesson.get("course", ""), student_id):
             return None, "нет доступа к заданию"
+
+        brigade = (brigade or "").strip()
+        if brigade and self.brigade_off(brigade):
+            return None, ("бригада «%s» отключена преподавателем — "
+                          "сдайте работу лично" % brigade)
+        if brigade and _lesson and not self.brigades_enabled(
+                _lesson.get("course", "")):
+            return None, ("бригады на этом курсе отключены преподавателем — "
+                          "сдайте работу лично")
 
         answers = answers or {}
         files = files or {}
@@ -736,6 +767,10 @@ class Core:
             issued = t.get("выдано")
             if isinstance(issued, list) and old in issued:
                 t["выдано"] = sorted({new if b == old else b for b in issued})
+        off = self.db.setdefault("бригады_откл", {})
+        if old in off:
+            off[new] = True
+            del off[old]
         self.store.save()
         return True
 
@@ -749,7 +784,45 @@ class Core:
                 n += 1
         if n:
             self.store.save()
+        off = self.db.setdefault("бригады_откл", {})
+        if off.pop(name, None):
+            self.store.save()
         return n
+
+    def brigades_enabled(self, course_id):
+        """Включены ли бригады на курсе (преподаватель может отключить)."""
+        c = self.course(course_id) or {}
+        return not c.get("без_бригад")
+
+    def set_brigades_enabled(self, course_id, enabled):
+        """Включить (True) или отключить (False) бригады для курса."""
+        c = self.course(course_id)
+        if not c:
+            return False
+        if enabled:
+            c.pop("без_бригад", None)
+        else:
+            c["без_бригад"] = True
+        self.store.save()
+        return True
+
+    def brigade_off(self, name):
+        """Бригада отключена преподавателем (сдача за бригаду закрыта)."""
+        off = self.db.get("бригады_откл") or {}
+        return bool(off.get((name or "").strip()))
+
+    def brigade_set_enabled(self, name, enabled):
+        """Включить бригаду (True) или отключить (False). Состав сохраняется."""
+        name = (name or "").strip()
+        if not name:
+            return False
+        off = self.db.setdefault("бригады_откл", {})
+        if enabled:
+            off.pop(name, None)
+        else:
+            off[name] = True
+        self.store.save()
+        return True
 
     # ── ЖУРНАЛ ДЕЙСТВИЙ (пишет core, показывает модуль audit) ────────
     def audit_dir(self):

@@ -35,18 +35,19 @@ DRAFT_JS = """<script>
   var K='draft_'+U+location.pathname;
   if(/[?&]ok=1/.test(location.search)){try{localStorage.removeItem(K)}catch(e){}return}
   var f=document.querySelector('form.task-form');if(!f)return;
-  if(!f.querySelector('[name=wc_prefill]')){
-    try{
-      var d=JSON.parse(localStorage.getItem(K)||'{}');
-      for(var i=0;i<f.elements.length;i++){var el=f.elements[i];
-        if(!el.name||el.type=='file'||el.type=='submit')continue;
-        if(el.type=='radio'||el.type=='checkbox'){
-          var v=d[el.name];
-          el.checked=(v===undefined)?false:(Array.isArray(v)?v.indexOf(el.value)>=0:v===el.value);
-        }else if(d[el.name]!==undefined){el.value=d[el.name];}
-      }
-    }catch(e){}
-  }
+  // Черновик localStorage главнее серверного предзаполнения (wc_prefill):
+  // при ошибке валидации (?error=) или F5 нез-saving правки не теряются.
+  try{
+    var d=JSON.parse(localStorage.getItem(K)||'{}');
+    for(var i=0;i<f.elements.length;i++){var el=f.elements[i];
+      if(!el.name||el.type=='file'||el.type=='submit')continue;
+      if(el.type=='radio'||el.type=='checkbox'){
+        var v=d[el.name];
+        if(v===undefined)continue; // в черновике нет — не трогаем
+        el.checked=Array.isArray(v)?v.indexOf(el.value)>=0:v===el.value;
+      }else if(d[el.name]!==undefined){el.value=d[el.name];}
+    }
+  }catch(e){}
   function save(){
     try{
       var d={};new FormData(f).forEach(function(v,k){
@@ -132,16 +133,26 @@ class Router:
     """Простой роутер на основе префиксов."""
 
     def __init__(self):
-        self.routes = []  # [(method, prefix, handler, access)]
+        self.routes = []  # [(method, prefix, handler, access, owner)]
 
-    def add(self, method, path, handler=None, access="any"):
+    def add(self, method, path, handler=None, access="any", owner=""):
         assert access in ("any", "student", "staff"), "unknown access: " + access
         if handler is None:
-            return lambda fn: self._register(method, path, fn, access)
-        self._register(method, path, handler, access)
+            return lambda fn: self._register(method, path, fn,
+                                             access, owner)
+        self._register(method, path, handler, access, owner)
 
-    def _register(self, method, path, handler, access):
-        self.routes.append((method.upper(), path, handler, access))
+    def _register(self, method, path, handler, access, owner=""):
+        self.routes.append((method.upper(), path, handler, access,
+                            owner))
+
+    def remove_owner(self, owner):
+        """Убрать все маршруты владельца (горячая перезагрузка).
+
+        Список пересоздаётся: параллельный запрос безопасно догонит
+        итерацию по старому списку.
+        """
+        self.routes = [r for r in self.routes if r[4] != owner]
 
     def match(self, method, path):
         method = method.upper()
@@ -150,7 +161,7 @@ class Router:
         best_params = {}
         best_len = -1
 
-        for m, prefix, handler, access in self.routes:
+        for m, prefix, handler, access, _owner in self.routes:
             if m not in (method, "ANY"):
                 continue
             if path == prefix:
@@ -430,11 +441,12 @@ class WorksServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, core, host="", port=8080, static_dir="", passwd="",
-                 no_pass=False):
+                 no_pass=False, ci_token=""):
         self.core = core
         self.static_dir = os.path.abspath(static_dir) if static_dir else ""
         self.passwd = passwd or ""
         self.no_pass = bool(no_pass)
+        self.ci_token = self._load_ci_token(ci_token)
         self.sessions = {}           # token -> {"t": время активности}
         self._fails = {}             # ip -> [время неудачных попыток входа]
         self.session_ttl = 8 * 3600  # срок жизни сессии преподавателя, сек
@@ -447,10 +459,36 @@ class WorksServer(http.server.ThreadingHTTPServer):
         WorksHandler._core = core
         core.router = WorksHandler._router
 
-        for method, path, handler, access in core.pending_routes:
-            WorksHandler._router.add(method, path, handler, access)
+        for method, path, handler, access, owner in core.pending_routes:
+            WorksHandler._router.add(method, path, handler, access,
+                                     owner=owner)
+        core.pending_routes = []  # всё перенесено в роутер
+        # Дальше маршруты модулей добавляются сразу в живой роутер
+        # (горячая перезагрузка модулей через POST /_reload).
+        core.live_router = WorksHandler._router
 
         super().__init__((host, port), WorksHandler)
+
+    def _load_ci_token(self, token):
+        """Токен CI (POST /_reload): аргумент CLI или файл _ci.token
+        в хранилище (создаётся при первом старте). Пусто = запрет."""
+        if token:
+            return token
+        path = os.path.join(self.core.store.root, "_ci.token")
+        try:
+            with open(path, encoding="ascii") as f:
+                s = f.read().strip()
+            if len(s) >= 16:
+                return s
+        except OSError:
+            pass
+        s = secrets.token_hex(16)
+        try:
+            with open(path, "w", encoding="ascii") as f:
+                f.write(s)
+        except OSError:
+            return ""
+        return s
 
     def _load_secret(self):
         """Секрет для подписи кук студентов (переживает перезапуск)."""
@@ -581,6 +619,49 @@ class WorksServer(http.server.ThreadingHTTPServer):
                     _c.audit("неизвестный",
                              "неудачная попытка входа преподавателя", ip=ip)
                 handler._redirect("/_staff_login?err=1")
+            return _SENT
+
+        @r.add("POST", "/_reload")
+        def hot_reload(handler, params):
+            """Горячая перезагрузка модулей (CI).
+
+            Только localhost и только с токеном (--ci-token или файл
+            _ci.token в хранилище). Тело: module=<id> (или all).
+            Ответ: JSON {"ok":..., "modules":[{id,state,reason}]}.
+            """
+            ip = handler.client_address[0]
+            if ip not in ("127.0.0.1", "::1"):
+                handler._send_json(403, {"error": "только localhost"})
+                return _SENT
+            data = handler._parse_post()
+            tok = (handler.headers.get("X-CI-Token")
+                   or data.get("token", ""))
+            if (not self.ci_token or not tok
+                    or not secrets.compare_digest(str(tok).encode("utf-8"),
+                                                  self.ci_token.encode("utf-8"))):
+                handler._send_json(403, {"error": "неверный токен"})
+                return _SENT
+            mod_id = str(data.get("module") or "all").strip()
+            from core.module import reload_module
+            if mod_id == "all":
+                ids = [m["id"] for m in self.core.modules
+                       if m.get("state") == "ok"]
+            else:
+                ids = [mod_id]
+            out, ok = [], True
+            for mid in ids:
+                info = reload_module(self.core, self.core.mods_dir, mid)
+                out.append({"id": mid, "state": info.get("state", "?"),
+                            "reason": info.get("reason", "")})
+                ok = ok and info.get("state") in ("ok", "выключен")
+            try:
+                self.core.audit(
+                    "ci", "горячая перезагрузка модулей",
+                    {"модули": [o["id"] for o in out], "ok": ok}, ip=ip)
+            except Exception:
+                pass
+            handler._send_json(200 if ok else 500,
+                               {"ok": ok, "modules": out})
             return _SENT
 
         @r.add("GET", "/_modules", access="staff")
@@ -759,7 +840,9 @@ class WorksServer(http.server.ThreadingHTTPServer):
             lessons = handler._core.lessons(cid)
             # занятия, где студенту не доступно ни одно задание, скрыты
             _stu_l = handler._core.student(sid)
-            _brg_l = (_stu_l.get("бригада", "") or "").strip() if _stu_l else ""
+            _brg_l = ((_stu_l.get("бригада", "") or "").strip()
+                      if _stu_l and handler._core.brigades_enabled(cid)
+                      else "")
             lessons = [l for l in lessons
                        if not handler._core.tasks(l["id"]) or any(
                            handler._core.task_for_brigade(t, _brg_l)
@@ -786,14 +869,20 @@ class WorksServer(http.server.ThreadingHTTPServer):
                 if b:
                     teams.setdefault(b, []).append(s.get("fio", ""))
             bmax = handler._core.brigade_max(cid)
+            my_off = bool(my_br) and handler._core.brigade_off(my_br)
             if my_br:
                 mine_html = ('<p>Моя бригада: <span class="team-badge">👥 %s'
-                             '</span></p>' % _e(my_br))
+                             '</span>%s</p>'
+                             % (_e(my_br),
+                                ' <span class="reason">⛔ отключена '
+                                'преподавателем — сдача за бригаду закрыта'
+                                '</span>' if my_off else ""))
             else:
                 mine_html = '<p class="hint">Вы пока без бригады.</p>'
             rows = ""
             for b in sorted(teams):
                 members = teams[b]
+                boff = handler._core.brigade_off(b)
                 if b == my_br:
                     act = ('<form method="post" action="/brigade" '
                            'style="display:inline">'
@@ -801,6 +890,8 @@ class WorksServer(http.server.ThreadingHTTPServer):
                            '<input type="hidden" name="act" value="leave">'
                            '<button class="btn-sm btn-secondary">Выйти</button>'
                            '</form>' % _e(cid))
+                elif boff:
+                    act = '<span class="reason">⛔ отключена</span>'
                 elif len(members) < bmax:
                     act = ('<form method="post" action="/brigade" '
                            'style="display:inline">'
@@ -811,23 +902,31 @@ class WorksServer(http.server.ThreadingHTTPServer):
                            % (_e(cid), _e(b)))
                 else:
                     act = '<span class="reason">мест нет</span>'
-                rows += ('<li>👥 <b>%s</b> — %d/%d %s</li>'
-                         % (_e(b), len(members), bmax, act))
-            bhtml = ('<h2>👷 Регистрация бригады</h2>%s%s<ul>%s</ul>'
-                     '<form method="post" action="/brigade" class="task-form" '
-                     'style="padding:14px 18px">'
-                     '<input type="hidden" name="course" value="%s">'
-                     '<input type="hidden" name="act" value="create">'
-                     '<p><label>Название бригады: '
-                     '<input type="text" name="name" maxlength="40" '
-                     'placeholder="например, Искра" required></label></p>'
-                     '<p><button>Создать бригаду</button></p></form>'
-                     '<p class="hint">Состав — до %d чел. Отчёт — один на '
-                     'всех. Задания бригада получает, когда преподаватель '
-                     'их выдаст.</p>'
-                     ) % (bmsg, mine_html,
-                          rows or '<li class="hint">Пока нет ни одной бригады.</li>',
-                          _e(cid), bmax)
+                rows += ('<li>👥 <b>%s</b>%s — %d/%d %s</li>'
+                         % (_e(b),
+                            ' <span class="reason">(отключена)</span>'
+                            if boff else "",
+                            len(members), bmax, act))
+            if handler._core.brigades_enabled(cid):
+                bhtml = ('<h2>👷 Регистрация бригады</h2>%s%s<ul>%s</ul>'
+                         '<form method="post" action="/brigade" class="task-form" '
+                         'style="padding:14px 18px">'
+                         '<input type="hidden" name="course" value="%s">'
+                         '<input type="hidden" name="act" value="create">'
+                         '<p><label>Название бригады: '
+                         '<input type="text" name="name" maxlength="40" '
+                         'placeholder="например, Искра" required></label></p>'
+                         '<p><button>Создать бригаду</button></p></form>'
+                         '<p class="hint">Состав — до %d чел. Отчёт — один на '
+                         'всех. Задания бригада получает, когда преподаватель '
+                         'их выдаст.</p>'
+                         ) % (bmsg, mine_html,
+                              rows or '<li class="hint">Пока нет ни одной бригады.</li>',
+                              _e(cid), bmax)
+            else:
+                bhtml = ('<div class="task-desc"><h2>👷 Бригады</h2>'
+                         '<p class="hint">Бригады на этом курсе отключены '
+                         'преподавателем — работы сдаются лично.</p></div>')
             body = ('<ul class="lesson-list">%s</ul>%s' % (items, bhtml))
             return handler._core.page(course.get("title", ""), body, course=course)
 
@@ -856,6 +955,12 @@ class WorksServer(http.server.ThreadingHTTPServer):
                 if b:
                     teams.setdefault(b, []).append(s["id"])
             bmax = handler._core.brigade_max(cid)
+            if act in ("create", "join") and \
+                    not handler._core.brigades_enabled(cid):
+                back += "?brig_err=" + urllib.parse.quote(
+                    "Бригады на этом курсе отключены преподавателем")
+                handler._redirect(back)
+                return _SENT
             if act == "leave":
                 if my_br:
                     handler._core.student_set_brigade(sid, "")
@@ -867,6 +972,9 @@ class WorksServer(http.server.ThreadingHTTPServer):
                 elif not name:
                     back += "?brig_err=" + urllib.parse.quote(
                         "Введите название бригады")
+                elif handler._core.brigade_off(name):
+                    back += "?brig_err=" + urllib.parse.quote(
+                        "Бригада «%s» отключена преподавателем" % name)
                 elif name in teams and len(teams[name]) >= bmax:
                     back += "?brig_err=" + urllib.parse.quote(
                         "В бригаде «%s» нет мест (макс. %d)" % (name, bmax))
@@ -896,7 +1004,10 @@ class WorksServer(http.server.ThreadingHTTPServer):
             course = handler._core.course(lesson.get("course", ""))
             tasks = handler._core.tasks(lid)
             _stu0 = handler._core.student(sid)
-            _brg0 = (_stu0.get("бригада", "") or "").strip() if _stu0 else ""
+            _brg0 = ((_stu0.get("бригада", "") or "").strip()
+                     if _stu0 and handler._core.brigades_enabled(
+                         lesson.get("course", ""))
+                     else "")
             if tasks and not any(handler._core.task_for_brigade(t, _brg0)
                                  for t in tasks):
                 return handler._core.page(
@@ -943,13 +1054,22 @@ class WorksServer(http.server.ThreadingHTTPServer):
                     "Нет доступа",
                     '<p class="error">Вы не зачислены на этот курс.</p>')
             _stu0 = handler._core.student(sid)
-            _brg0 = (_stu0.get("бригада", "") or "").strip() if _stu0 else ""
+            _brg0 = ((_stu0.get("бригада", "") or "").strip()
+                     if _stu0 and _lesson0 and handler._core.brigades_enabled(
+                         _lesson0.get("course", ""))
+                     else "")
             if _t and not handler._core.task_for_brigade(_t, _brg0):
+                _no_br = _lesson0 and not handler._core.brigades_enabled(
+                    _lesson0.get("course", ""))
                 return handler._core.page(
                     "Задание не выдано",
-                    '<p class="error">Это задание ещё не выдано вашей бригаде. '
-                    'Создайте бригаду на странице курса или попросите '
-                    'преподавателя выдать его.</p>')
+                    '<p class="error">%s</p>'
+                    % ("Бригады на этом курсе отключены преподавателем — "
+                       "попросите его выдать задание всем."
+                       if _no_br else
+                       "Это задание ещё не выдано вашей бригаде. Создайте "
+                       "бригаду на странице курса или попросите "
+                       "преподавателя выдать его."))
             lesson = handler._core.lesson(handler._core.task(tid).get("lesson", ""))
             course = handler._core.course(lesson.get("course", "")) if lesson else None
             sub = handler._core.sub(tid, sid)
@@ -1025,13 +1145,25 @@ class WorksServer(http.server.ThreadingHTTPServer):
             _stu = handler._core.student(sid)
             _brg = (_stu.get("бригада", "") or "").strip() if _stu else ""
             br_html = ""
-            if _brg:
-                br_html = (
-                    '<p><label>Сдача: '
-                    '<select name="brigade">'
-                    '<option value="">👤 Лично (свой отчёт)</option>'
-                    '<option value="%s">👥 За бригаду «%s» — отчёт один на всех'
-                    '</option></select></label></p>' % (_e(_brg), _e(_brg)))
+            if _brg and course and not handler._core.brigades_enabled(
+                    course.get("id", "")):
+                br_html = ('<p class="hint">👷 Бригады на этом курсе '
+                           'отключены преподавателем — работа сдаётся '
+                           'лично.</p>')
+            elif _brg:
+                if handler._core.brigade_off(_brg):
+                    br_html = ('<p class="hint">⚠️ Бригада «%s» отключена '
+                               'преподавателем — сдайте работу лично или '
+                               'попросите преподавателя включить бригаду.</p>'
+                               % _e(_brg))
+                else:
+                    br_html = (
+                        '<p><label>Сдача: '
+                        '<select name="brigade">'
+                        '<option value="">👤 Лично (свой отчёт)</option>'
+                        '<option value="%s">👥 За бригаду «%s» — отчёт один '
+                        'на всех</option></select></label></p>'
+                        % (_e(_brg), _e(_brg)))
             else:
                 _cb = "/course/%s" % course["id"] if course else ""
                 if _cb:
@@ -1085,8 +1217,18 @@ class WorksServer(http.server.ThreadingHTTPServer):
                               'версии были прикреплены файлы — они не '
                               'переносятся автоматически, прикрепите их '
                               'заново при необходимости.</div>')
-            body = ('<p><a href="/lesson/%s">%s</a></p>'
-                    '<div class="task-desc">%s</div>%s%s%s%s'
+            _sim_html = ""
+            for _frag in handler._core.events.run(
+                    "task.panel", task=_t, sub=sub,
+                    handler=handler):
+                _sim_html += _frag or ""
+            _qs0 = urllib.parse.parse_qs(
+                urllib.parse.urlparse(handler.path).query)
+            _err0 = (_qs0.get("error") or [""])[0]
+            _err_html = ('<p class="error"><b>%s</b></p>' % _e(_err0)
+                         if _err0 else "")
+            body = ('<p><a href="/lesson/%s">%s</a></p>%s'
+                    '<div class="task-desc">%s</div>%s%s%s%s%s'
                     '<form method="post" action="/api/submit"'
                     ' enctype="multipart/form-data" class="task-form">'
                     '<input type="hidden" name="task" value="%s">%s%s%s'
@@ -1094,8 +1236,10 @@ class WorksServer(http.server.ThreadingHTTPServer):
                     + DRAFT_JS.replace("__SID__", _e(sid))) % (
                 _e(lesson["id"] if lesson else ""),
                 _e(lesson["title"] if lesson else ""),
+                _err_html,
                 _md(task_data.get("описание", "")),
-                scn_html, dl_html, carry_html, sub_info, tid, form_html,
+                scn_html, _sim_html, dl_html, carry_html, sub_info,
+                tid, form_html,
                 br_html, _pf)
             return handler._core.page(task_data.get("title", ""), body,
                                       course=course, lesson=lesson)
@@ -1110,8 +1254,12 @@ class WorksServer(http.server.ThreadingHTTPServer):
                 return _SENT
             _tq = handler._core.task(tid)
             _sq = handler._core.student(sid)
-            if _tq and not handler._core.task_for_brigade(
-                    _tq, ((_sq.get("бригада", "") or "").strip() if _sq else "")):
+            _ql = handler._core.lesson(_tq.get("lesson", "")) if _tq else None
+            _qbrg = ((_sq.get("бригада", "") or "").strip()
+                     if _sq and _ql and handler._core.brigades_enabled(
+                         _ql.get("course", ""))
+                     else "")
+            if _tq and not handler._core.task_for_brigade(_tq, _qbrg):
                 handler._send_json(403, {"error": "task not issued"})
                 return _SENT
             answers = {}

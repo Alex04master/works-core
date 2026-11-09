@@ -1,6 +1,6 @@
 # Integration smoke test for works-core (ASCII only)
 $ErrorActionPreference = 'Continue'
-Set-Location 'D:\AI\AI-projects\works-core'
+Set-Location 'E:\AI\works-core'
 
 # 0) compile check (glob handles cyrillic filenames inside python)
 python -X utf8 -c "import py_compile,glob; files=['server.py']+glob.glob('core/*.py')+glob.glob('modules/*/*.py'); [py_compile.compile(f,doraise=True) for f in files]; print('COMPILE OK', len(files))"
@@ -398,6 +398,18 @@ try {
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   offline blanks' } else { Write-Output 'FAIL offline blanks'; $script:fail++ }
   python -X utf8 tests\_chk_planoff.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   offline scenario submission' } else { Write-Output 'FAIL offline scenario'; $script:fail++ }
+
+  # ---- brigades: enable/disable by teacher ----
+  python -X utf8 tests\_chk_brig9.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   brigade enable/disable' } else { Write-Output 'FAIL brigade enable/disable'; $script:fail++ }
+
+  # ---- brigades: course-level switch ----
+  python -X utf8 tests\_chk_brig10.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   brigades per-course switch' } else { Write-Output 'FAIL brigades per-course switch'; $script:fail++ }
+
+  # ---- simulator embed (velxio) ----
+  python -X utf8 tests\_chk_sim.py
+  if ($LASTEXITCODE -eq 0) { Write-Output 'OK   simulator embed' } else { Write-Output 'FAIL simulator embed'; $script:fail++ }
 } finally {
   Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 }

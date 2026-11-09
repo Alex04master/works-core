@@ -4,7 +4,16 @@ import io
 import os
 import shutil
 import sys
-base = r"D:\AI\AI-projects\Сценарии для УП"
+base = ""
+for cand in (r"E:\AI\AI-projects\Сценарии для УП",
+             r"D:\AI\AI-projects\Сценарии для УП",
+             r"D:\AI\AI-projects\works-core\Сценарии для УП"):
+    if os.path.isdir(cand):
+        base = cand
+        break
+if not base:
+    print("SKIP: папка «Сценарии для УП» не найдена (E:/D:)")
+    sys.exit(0)
 kit = os.path.join(base, "_smoketest_kit")
 if sys.argv[1:] and sys.argv[1] == "remove":
     shutil.rmtree(kit, ignore_errors=True)

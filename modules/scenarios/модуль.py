@@ -94,7 +94,25 @@ def _card_desc(card, ev):
 
 
 def register(ctx):
-    base = (ctx.settings.get("папка") or "").strip()
+    def _kits_base():
+        """Папка с комплектами: настройка, а если её нет на диске —
+        известные места (путь зависит от компьютера: E:/ или D:/)."""
+        cand = (ctx.settings.get("папка") or "").strip()
+        if cand and os.path.isdir(cand):
+            return cand
+        root = os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))))
+        for c in (os.path.join(root, os.pardir, "AI-projects",
+                               "Сценарии для УП"),
+                  "E:/AI/AI-projects/Сценарии для УП",
+                  "D:/AI/AI-projects/Сценарии для УП",
+                  "D:/AI/AI-projects/works-core/Сценарии для УП"):
+            c = os.path.abspath(c)
+            if os.path.isdir(c):
+                return c
+        return cand
+
+    base = _kits_base()
 
     def kits():
         out = []

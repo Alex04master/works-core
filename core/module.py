@@ -7,6 +7,7 @@
 import importlib.util
 import json
 import os
+import re
 import sys
 import traceback
 
@@ -36,7 +37,14 @@ class ModuleContext:
         self._add_route(method, path, handler, access)
 
     def _add_route(self, method, path, handler, access):
-        self._core.pending_routes.append((method, path, handler, access))
+        live = self._core.live_router
+        if live is not None:
+            # сервер уже работает: маршрут сразу в живой роутер
+            # (горячая перезагрузка модуля)
+            live.add(method, path, handler, access, owner=self.id)
+        else:
+            self._core.pending_routes.append(
+                (method, path, handler, access, self.id))
 
     def on(self, event, handler):
         """Подписаться на событие ядра."""
@@ -167,6 +175,22 @@ class ModuleContext:
     def brigade_rename(self, old, new):
         return self._core.brigade_rename(old, new)
 
+    def brigade_off(self, name):
+        """True, если бригада отключена преподавателем."""
+        return self._core.brigade_off(name)
+
+    def brigade_set_enabled(self, name, enabled):
+        """Включить (True) или отключить (False) бригаду."""
+        return self._core.brigade_set_enabled(name, enabled)
+
+    def brigades_enabled(self, course_id):
+        """True, если бригады на курсе включены."""
+        return self._core.brigades_enabled(course_id)
+
+    def set_brigades_enabled(self, course_id, enabled):
+        """Включить (True) или отключить (False) бригады для курса."""
+        return self._core.set_brigades_enabled(course_id, enabled)
+
     def brigade_delete(self, name):
         return self._core.brigade_delete(name)
 
@@ -285,6 +309,7 @@ def load_modules(core, mods_dir):
     """Просканировать папку модулей и загрузить найденные."""
     if not os.path.isdir(mods_dir):
         return
+    core.mods_dir = mods_dir
     for name in sorted(os.listdir(mods_dir)):
         d = os.path.join(mods_dir, name)
         if not os.path.isdir(d):
@@ -322,16 +347,19 @@ def load_modules(core, mods_dir):
             core.modules.append(info)
             continue
 
-        ctx = ModuleContext(core, info["id"], man, d)
-
         try:
             kind = man.get("kind", "python")
             if kind == "json":
+                ctx = ModuleContext(core, info["id"], man, d)
                 register_json(ctx, man)
             else:
                 py_path = os.path.join(d, "модуль.py")
                 if os.path.isfile(py_path):
-                    _import_py(py_path, f"ws_mod_{info['id']}").register(ctx)
+                    mod_name = "ws_mod_%s_1" % re.sub(r"\W", "_", info["id"])
+                    core._mod_names[info["id"]] = mod_name
+                    core._mod_gen[info["id"]] = 1
+                    ctx = ModuleContext(core, info["id"], man, d)
+                    _import_py(py_path, mod_name).register(ctx)
                 else:
                     info.update(state="сбой", reason="нет модуль.py")
                     core.modules.append(info)
@@ -341,6 +369,136 @@ def load_modules(core, mods_dir):
             traceback.print_exc()
 
         core.modules.append(info)
+
+
+def reload_module(core, mods_dir, mod_id):
+    """Горячая перезагрузка одного модуля в работающем сервере.
+
+    Безопасный порядок:
+      1) новый код компилируется и импортируется ДО снятия старого -
+         синтаксическая ошибка не трогает работающий модуль;
+      2) старые маршруты и подписки снимаются по владельцу (mod_id);
+      3) модуль регистрируется заново. Если register() падает -
+         попытка восстановить прежний код; иначе модуль помечается
+         «сбой» (исправление файла + повторный /_reload поднимает).
+    """
+    def detach(mid):
+        core.events.remove_mod(mid)
+        if core.live_router is not None:
+            core.live_router.remove_owner(mid)
+
+    # каталог модуля по манифесту (id может не совпадать с именем папки)
+    d = None
+    if os.path.isdir(mods_dir):
+        for name in sorted(os.listdir(mods_dir)):
+            cand = os.path.join(mods_dir, name)
+            man_path = os.path.join(cand, "модуль.json")
+            if not os.path.isfile(man_path):
+                continue
+            try:
+                with open(man_path, encoding="utf-8") as f:
+                    man = json.load(f)
+            except (ValueError, OSError):
+                continue
+            if str(man.get("id") or name) == mod_id:
+                d = cand
+                break
+        if d is None:
+            cand = os.path.join(mods_dir, mod_id)
+            if os.path.isfile(os.path.join(cand, "модуль.json")):
+                d = cand
+
+    known = next((m for m in core.modules if m.get("id") == mod_id), None)
+    if known is None:
+        # модуль, впервые загруженный на живом сервере: появится и в
+        # /_modules, и в перезагрузке module=all
+        known = {"id": mod_id, "state": "?", "reason": ""}
+        core.modules.append(known)
+
+    if d is None:
+        # модуль исчез с диска: снять его с живого сервера
+        detach(mod_id)
+        known.update(state="выключен", reason="нет на диске")
+        return known
+
+    info = known
+    info["dir"] = d
+
+    try:
+        with open(os.path.join(d, "модуль.json"), encoding="utf-8") as f:
+            man = json.load(f)
+    except (ValueError, OSError) as ex:
+        detach(mod_id)
+        info.update(state="битый манифест", reason=str(ex))
+        return info
+
+    mid = str(man.get("id") or mod_id)
+    info["id"] = mid
+    info["name"] = str(man.get("name") or mid)
+
+    if not core.is_module_enabled(mid) or not man.get("enabled", True):
+        detach(mid)
+        info.update(state="выключен", reason="")
+        return info
+
+    if man.get("api") != API:
+        info.update(state="отключён",
+                    reason=f"нужен api v{man.get('api')}, ядро v{API}")
+        return info
+
+    # 1) импорт нового кода (старый пока работает)
+    old_name = core._mod_names.get(mid)
+    old_mod = sys.modules.pop(old_name, None) if old_name else None
+    gen = core._mod_gen.get(mid, 0) + 1
+    core._mod_gen[mid] = gen
+    mod_name = "ws_mod_%s_%d" % (re.sub(r"\W", "_", mid), gen)
+    new_mod = None
+    try:
+        py_path = os.path.join(d, "модуль.py")
+        if man.get("kind", "python") == "json":
+            pass
+        elif os.path.isfile(py_path):
+            new_mod = _import_py(py_path, mod_name)
+        else:
+            info.update(state="сбой", reason="нет модуль.py")
+            return info
+    except Exception as ex:
+        info.update(state="сбой", reason=f"{type(ex).__name__}: {ex}")
+        traceback.print_exc()
+        return info  # старый код продолжает работать
+
+    # 2) снять старую регистрацию
+    detach(mid)
+
+    # 3) зарегистрировать заново
+    ctx = ModuleContext(core, mid, man, d)
+    try:
+        if new_mod is None:
+            register_json(ctx, man)
+        else:
+            new_mod.register(ctx)
+        info.update(state="ok", reason="")
+        core._mod_names[mid] = mod_name
+        return info
+    except Exception as ex:
+        traceback.print_exc()
+        # откат: вернуть прежний код, если он у нас сохранился
+        detach(mid)
+        if old_mod is not None and old_name:
+            sys.modules[old_name] = old_mod
+            core._mod_names[mid] = old_name
+            try:
+                old_mod.register(ModuleContext(core, mid, man, d))
+                info.update(state="ok", reason="откат на прежний код: "
+                                               f"{type(ex).__name__}: {ex}")
+                return info
+            except Exception as ex2:
+                traceback.print_exc()
+                info.update(state="сбой",
+                            reason=f"откат не удался: {type(ex2).__name__}")
+                return info
+        info.update(state="сбой", reason=f"{type(ex).__name__}: {ex}")
+        return info
 
 
 def register_json(ctx, man):

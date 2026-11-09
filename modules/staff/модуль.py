@@ -351,47 +351,89 @@ def register(ctx):
             'placeholder="П-21" required></label></p>'
             '<p><button>Открыть группе</button></p></form></div>'
         ) % (group_rows, groups_status, _e(cid))
+        bon = ctx.brigades_enabled(cid)
         bmax = ctx.brigade_max(cid)
         teams = {}
         for s in ctx.list_students():
             b = (s.get("бригада") or "").strip()
             if b:
                 teams.setdefault(b, []).append(s.get("fio", ""))
-        team_blocks = ""
-        for b, m in sorted(teams.items()):
-            team_blocks += (
-                '<div class="field-block" style="margin:8px 0">'
-                '<p><b>👥 %s</b> — %d чел. (лимит %d): %s</p>'
-                '<form method="post" action="/staff/brigade_rename" '
-                'style="display:inline">'
+        max_form = ""
+        if bon:
+            team_blocks = ""
+            for b, m in sorted(teams.items()):
+                boff = ctx.brigade_off(b)
+                team_blocks += (
+                    '<div class="field-block" style="margin:8px 0%s">'
+                    '<p><b>👥 %s</b>%s — %d чел. (лимит %d): %s</p>'
+                    '<form method="post" action="/staff/brigade_state" '
+                    'style="display:inline">'
+                    '<input type="hidden" name="course" value="%s">'
+                    '<input type="hidden" name="name" value="%s">'
+                    '<input type="hidden" name="act" value="%s">'
+                    '<button class="btn-sm btn-secondary">%s</button></form> '
+                    '<form method="post" action="/staff/brigade_rename" '
+                    'style="display:inline">'
+                    '<input type="hidden" name="course" value="%s">'
+                    '<input type="hidden" name="old" value="%s">'
+                    '<input type="text" name="new" value="%s" '
+                    'style="width:150px;padding:6px 8px">'
+                    '<button class="btn-sm">Переименовать</button></form> '
+                    '<form method="post" action="/staff/brigade_delete" '
+                    'style="display:inline">'
+                    '<input type="hidden" name="course" value="%s">'
+                    '<input type="hidden" name="name" value="%s">'
+                    '<button class="btn-sm btn-danger">Распустить</button></form>'
+                    '</div>'
+                ) % (';opacity:.55' if boff else "",
+                     _e(b),
+                     ' <span class="reason">⛔ отключена</span>' if boff else "",
+                     len(m), bmax, _e(", ".join(m)),
+                     _e(cid), _e(b), "on" if boff else "off",
+                     '▶️ Включить' if boff else '⏸ Отключить',
+                     _e(cid), _e(b), _e(b), _e(cid), _e(b))
+            if not team_blocks:
+                team_blocks = (
+                    '<p class="hint">Пока нет бригад. Создайте состав: '
+                    'впишите название бригады студенту в таблице '
+                    '«📋 Студенты» выше — или студенты зарегистрируются '
+                    'сами на странице курса.</p>')
+            max_form = (
+                '<form method="post" action="/staff/brigade_max">'
                 '<input type="hidden" name="course" value="%s">'
-                '<input type="hidden" name="old" value="%s">'
-                '<input type="text" name="new" value="%s" '
-                'style="width:150px;padding:6px 8px">'
-                '<button class="btn-sm">Переименовать</button></form> '
-                '<form method="post" action="/staff/brigade_delete" '
-                'style="display:inline">'
-                '<input type="hidden" name="course" value="%s">'
-                '<input type="hidden" name="name" value="%s">'
-                '<button class="btn-sm btn-danger">Распустить</button></form>'
-                '</div>'
-            ) % (_e(b), len(m), bmax, _e(", ".join(m)), _e(cid), _e(b),
-                 _e(b), _e(cid), _e(b))
-        if not team_blocks:
-            team_blocks = '<p class="hint">Пока нет бригад.</p>'
+                '<p><label>Максимальный состав бригады: '
+                '<input type="number" name="max" value="%d" min="1" max="20" '
+                'required></label></p>'
+                '<p><button>Сохранить</button></p></form>'
+            ) % (_e(cid), bmax)
+        else:
+            team_blocks = (
+                '<p class="hint">⛔ Бригады на курсе отключены: студенты '
+                'сдают работы лично, блок регистрации бригад на странице '
+                'курса скрыт, выдача бригадам недоступна.</p>')
+        sw = (
+            '<div style="margin:0 0 10px"><b>Бригады на курсе:</b> '
+            '<span class="%s">%s</span> '
+            '<form method="post" action="/staff/brigades_course" '
+            'style="display:inline">'
+            '<input type="hidden" name="course" value="%s">'
+            '<input type="hidden" name="act" value="%s">'
+            '<button class="btn-sm btn-secondary">%s</button></form></div>'
+        ) % ("state-ok" if bon else "reason",
+             '✅ включены' if bon else '⛔ отключены',
+             _e(cid), "off" if bon else "on",
+             '⏸ Отключить бригады на курсе' if bon
+             else '▶️ Включить бригады на курсе')
         brigade_card = (
             '<div class="staff-card"><h2>👷 Бригады</h2>'
+            '%s'
             '<p class="hint">Студенты регистрируют бригады на странице курса; '
             'вы можете править состав в таблице студентов, переименовывать '
-            'и распускать бригады здесь. Максимальный состав назначаете вы.</p>'
-            '%s'
-            '<form method="post" action="/staff/brigade_max">'
-            '<input type="hidden" name="course" value="%s">'
-            '<p><label>Максимальный состав бригады: '
-            '<input type="number" name="max" value="%d" min="1" max="20" '
-            'required></label></p>'
-            '<p><button>Сохранить</button></p></form></div>'
-        ) % (team_blocks, _e(cid), bmax)
+            'и распускать бригады, отключать отдельную бригаду или бригады '
+            'всего курса. Отключённая бригада не принимает сдачи за бригаду '
+            'и недоступна для вступления (состав сохраняется).</p>'
+            '%s%s</div>'
+        ) % (sw, team_blocks, max_form)
         body = body.replace("</div></div>",
                             "</div>" + groups_card + brigade_card + enroll_card +
                             import_form + "</div>", 1)
@@ -450,8 +492,10 @@ def register(ctx):
                            for s in ctx.list_students()
                            if (s.get("бригада") or "").strip()})
         issue_head = ('<tr><th>Задание</th>'
-                      + "".join('<th title="состав см. в студентах">👥 %s</th>'
-                                % _e(b) for b in brigades)
+                      + "".join('<th title="состав см. в студентах">👥 %s%s</th>'
+                                % (_e(b), ' · отключена'
+                                   if ctx.brigade_off(b) else "")
+                                for b in brigades)
                       + '<th>Всем</th><th>Снять</th></tr>')
         issue_rows = ""
         for t in tasks:
@@ -483,7 +527,13 @@ def register(ctx):
                            % (wait_mark, _e(t["id"]), _e(t.get("title", "")),
                               cells, allc, off_cell))
         issue_card = ""
-        if tasks:
+        if tasks and not ctx.brigades_enabled(lesson.get("course", "")):
+            issue_card = (
+                '<div class="staff-card"><h2>📤 Массовая выдача бригадам</h2>'
+                '<p class="hint">⛔ Бригады на этом курсе отключены '
+                '(включить — на странице курса). Выдача «всем» и снятие '
+                'доступны на странице задания.</p></div>')
+        elif tasks:
             issue_card = (
                 '<form method="post" action="/staff/issue_mass" class="staff-card">'
                 '<h2>📤 Массовая выдача бригадам</h2>'
@@ -655,20 +705,32 @@ def register(ctx):
         issued_val = task.get("выдано")
         issued_set = set(issued_val) if isinstance(issued_val, list) else None
         is_scenario = bool((task.get("настройки") or {}).get("план"))
+        _lsn_t = ctx.get_lesson(task.get("lesson", ""))
+        _bon_t = ctx.brigades_enabled(_lsn_t.get("course", "") if _lsn_t else "")
         brigades = sorted({(s.get("бригада") or "").strip()
                            for s in ctx.list_students()
                            if (s.get("бригада") or "").strip()})
-        brig_rows = "".join(
-            '<label class="cb-label"><input type="checkbox" name="brigade" '
-            'value="%s"%s> 👥 %s</label>' % (
-                _e(b), " checked" if issued_set and b in issued_set else "",
-                _e(b))
-            for b in brigades) or \
-            '<p class="hint">Бригад пока нет — студенты регистрируют их на странице курса.</p>'
+        if _bon_t:
+            brig_rows = "".join(
+                '<label class="cb-label"><input type="checkbox" name="brigade" '
+                'value="%s"%s> 👥 %s%s</label>' % (
+                    _e(b), " checked" if issued_set and b in issued_set else "",
+                    _e(b), ' <span class="reason">отключена</span>'
+                    if ctx.brigade_off(b) else "")
+                for b in brigades) or \
+                '<p class="hint">Бригад пока нет — студенты регистрируют их на странице курса.</p>'
+        else:
+            brig_rows = ('<p class="hint">⛔ Бригады на этом курсе отключены '
+                         '(включить — на странице курса). Выдача «всем» и '
+                         'снятие выдачи работают.</p>')
         if issued_set is None and is_scenario:
-            status_html = ('<p class="reason">⏳ Сценарное задание ещё не '
-                           'выдано — студенты его не видят. Отметьте бригады '
-                           'или «выдать всем».</p>')
+            status_html = (
+                '<p class="reason">⏳ Сценарное задание ещё не выдано — '
+                'студенты его не видят. Отметьте бригады или «выдать всем».'
+                '</p>' if _bon_t else
+                '<p class="reason">⏳ Сценарное задание ещё не выдано — '
+                'студенты его не видят. Бригады на курсе отключены: '
+                'используйте «выдать всем».</p>')
         elif issued_set is None:
             status_html = '<p class="hint">Обычное задание — видно всем.</p>'
         elif not issued_set:
@@ -735,6 +797,9 @@ def register(ctx):
                 _e(task.get("описание", "")),
                 _e(form_json),
                 len(subs), sub_rows, issue_card)
+        for _frag in ctx.emit("staff.task_cards", task=task,
+                              handler=handler):
+            body += _frag or ""
         return _page(ctx, task.get("title", ""), body)
 
     # ── Редактировать задание ────────────────────────────────────────
@@ -1076,6 +1141,31 @@ def register(ctx):
         ctx.audit("бригада распущена",
                   {"бригада": data.get("name", "")}, handler=handler)
         handler._redirect("/staff/course/%s" % _e(data.get("course", "")))
+        return handler._SENT
+
+    # ── Включение/отключение бригады ──────────────────────────────────
+    @ctx.add_route("POST", "/staff/brigade_state", access="staff")
+    def brigade_state(handler, params):
+        data = handler._parse_post()
+        name = (data.get("name") or "").strip()
+        on = (data.get("act") or "").strip() == "on"
+        if name and ctx.brigade_set_enabled(name, on):
+            ctx.audit("бригада включена" if on else "бригада отключена",
+                      {"бригада": name}, handler=handler)
+        handler._redirect("/staff/course/%s" % _e(data.get("course", "")))
+        return handler._SENT
+
+    # ── Бригады курса: включить/отключить ─────────────────────────────
+    @ctx.add_route("POST", "/staff/brigades_course", access="staff")
+    def brigades_course(handler, params):
+        data = handler._parse_post()
+        cid = data.get("course", "")
+        on = (data.get("act") or "").strip() == "on"
+        if cid and ctx.set_brigades_enabled(cid, on):
+            ctx.audit("бригады курса включены" if on
+                      else "бригады курса отключены",
+                      {"курс": cid}, handler=handler)
+        handler._redirect("/staff/course/%s" % _e(cid))
         return handler._SENT
 
     # ── Максимальный состав бригад ───────────────────────────────────

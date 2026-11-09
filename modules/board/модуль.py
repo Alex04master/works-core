@@ -76,7 +76,8 @@ def register(ctx):
                 else:
                     solo.append({"name": s.get("fio", ""), "members": [],
                                  "score": sc})
-            out = [{"name": b, "members": t["members"], "score": t["score"]}
+            out = [{"name": b, "members": t["members"], "score": t["score"],
+                    "off": ctx.brigade_off(b)}
                    for b, t in teams.items()] + solo
             out.sort(key=lambda d: -d["score"])
             return out
@@ -93,7 +94,9 @@ def register(ctx):
                 '<div class="rest-score"><div class="rest-avg">%.1f</div>'
                 '<div class="pbar"><div class="pbar-fill" '
                 'style="width:%d%%"></div></div></div></div>'
-            ) % (m, d["name"], members, d["score"], w)
+            ) % (m, d["name"] + (' <span class="reason">· отключена</span>'
+                                 if d.get("off") else ""),
+                 members, d["score"], w)
 
         def rows_html(entries, podium):
             if not entries:
@@ -115,8 +118,10 @@ def register(ctx):
                         '<div class="pod-label">баллов</div>'
                         '<div class="pbar"><div class="pbar-fill" '
                         'style="width:%d%%"></div></div></div>'
-                    ) % (kinds[i], medals[i], d["name"], members,
-                         d["score"], w)
+                    ) % (kinds[i], medals[i],
+                         d["name"] + (' <span class="reason">· отключена'
+                                      '</span>' if d.get("off") else ""),
+                         members, d["score"], w)
                 html += '<div class="podium">%s</div>' % pod
                 for i, d in enumerate(entries[3:]):
                     html += row("%d." % (i + 4), d, maxg)

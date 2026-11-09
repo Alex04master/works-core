@@ -8,7 +8,10 @@
 import argparse
 import os
 import secrets
+import socket
+import subprocess
 import sys
+import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
@@ -19,6 +22,115 @@ from core.http import WorksServer
 from core.module import load_modules
 
 
+# ── Автозапуск симулятора velxio (модуль «sim») ─────────────────────────
+_SIM_PORTS = {"бэкенд": 8001, "фронтенд": 5173}
+
+
+def _port_busy(port):
+    s = socket.socket()
+    s.settimeout(0.5)
+    try:
+        return s.connect_ex(("127.0.0.1", port)) == 0
+    finally:
+        s.close()
+
+
+def _sim_autostart(root):
+    """Поднять velxio (бэкенд :8001 + фронтенд :5173), если ещё не работают.
+
+    Возвращает (строки-статусы, {имя: (порт, Popen)} — запущенные нами).
+    Симулятор необязателен: любая ошибка не мешает работе СДО.
+    """
+    root = os.path.abspath(root)
+    lines = []
+    started = {}
+    if not os.path.isdir(root):
+        lines.append("Симулятор: каталог %s не найден — запуск без него" % root)
+        return lines, started
+    bdir = os.path.join(root, "backend")
+    fdir = os.path.join(root, "frontend")
+    bins = os.path.join(root, "bin")  # arduino-cli для компиляции скетчей
+    bpy = os.path.join(bdir, "venv", "Scripts", "python.exe")
+    flags = (subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+             if os.name == "nt" else 0)  # окна velxio не показываем
+
+    def env():
+        e = dict(os.environ)
+        if os.path.isdir(bins):
+            e["PATH"] = bins + os.pathsep + e.get("PATH", "")
+        return e
+
+    def spawn(name, args, cwd):
+        log = open(os.path.join(root, "_сим-%s.log" % name), "ab")
+        p = subprocess.Popen(args, cwd=cwd, env=env(),
+                             stdin=subprocess.DEVNULL,
+                             stdout=log, stderr=subprocess.STDOUT,
+                             creationflags=flags)
+        started[name] = (_SIM_PORTS[name], p)
+
+    try:
+        if _port_busy(8001):
+            lines.append("Симулятор: бэкенд уже работает (http://localhost:8001)")
+        elif os.path.isfile(bpy):
+            spawn("бэкенд", [bpy, "-m", "uvicorn", "app.main:app",
+                             "--host", "127.0.0.1", "--port", "8001"], bdir)
+            lines.append("Симулятор: бэкенд запускается (:8001)…")
+        else:
+            lines.append("Симулятор: нет venv в %s — бэкенд пропущен" % root)
+
+        if _port_busy(5173):
+            lines.append("Симулятор: фронтенд уже работает "
+                         "(http://localhost:5173)")
+        elif os.path.isdir(os.path.join(fdir, "node_modules")):
+            cmd = (["cmd", "/c", "npm", "run", "dev", "--", "--host", "0.0.0.0"]
+                   if os.name == "nt" else
+                   ["npm", "run", "dev", "--", "--host", "0.0.0.0"])
+            spawn("фронтенд", cmd, fdir)
+            lines.append("Симулятор: фронтенд запускается (:5173)…")
+        else:
+            lines.append("Симулятор: нет node_modules в %s — фронтенд пропущен"
+                         % root)
+
+        if started:  # ждём готовности (до ~12 с)
+            for _ in range(24):
+                time.sleep(0.5)
+                if all(_port_busy(p) for p, _ in started.values()):
+                    break
+        for name, port in _SIM_PORTS.items():
+            if _port_busy(port):
+                lines.append("Симулятор %s: http://localhost:%d%s"
+                             % (name, port,
+                                "" if name in started else " (был запущен ранее)"))
+            elif name in started:
+                lines.append("Симулятор %s: не поднялся — см. лог _сим-%s.log"
+                             % (name, name))
+    except Exception as e:
+        lines.append("Симулятор: ошибка автозапуска (%s) — СДО продолжает работу"
+                     % e)
+    return lines, started
+
+
+def _sim_stop(started):
+    """Остановить только те компоненты симулятора, что запущены нами."""
+    for name, (port, p) in started.items():
+        try:
+            if os.name == "nt":
+                out = subprocess.run(["netstat", "-aon"], capture_output=True,
+                                     text=True, errors="replace").stdout
+                for ln in out.splitlines():
+                    parts = ln.split()
+                    if (len(parts) >= 5 and parts[3] == "LISTENING"
+                            and parts[1].endswith(":%d" % port)):
+                        subprocess.run(["taskkill", "/F", "/PID", parts[4]],
+                                       capture_output=True)
+                        break
+            else:
+                p.terminate()
+        except Exception:
+            pass
+    time.sleep(1)
+
+
 def main():
     ap = argparse.ArgumentParser(description="works-core: раздача и сбор работ")
     ap.add_argument("--port", type=int, default=8080, help="порт (по умолч. 8080)")
@@ -27,6 +139,13 @@ def main():
     ap.add_argument("--pass", dest="passwd", default="", help="пароль панели")
     ap.add_argument("--no-pass", action="store_true", help="панель без пароля")
     ap.add_argument("--demo", action="store_true", help="создать демо-данные")
+    ap.add_argument("--sim", nargs="?", const="", default=None,
+                    metavar="ПУТЬ",
+                    help="запустить симулятор velxio вместе с СДО "
+                         "(путь к velxio; по умолч. соседний каталог)")
+    ap.add_argument("--ci-token", default="",
+                    help="токен CI для POST /_reload "
+                         "(по умолч. файл _ci.token в хранилище)")
     args = ap.parse_args()
 
     # Хранилище
@@ -47,12 +166,13 @@ def main():
     # Загрузка модулей
     mods_dir = os.path.join(_HERE, "modules")
     load_modules(core, mods_dir)
+    core.mods_dir = mods_dir
 
     # Старт сервера
     static_dir = os.path.join(_HERE, "static")
     server = WorksServer(core, host=args.host, port=args.port,
                          static_dir=static_dir, passwd=passwd,
-                         no_pass=args.no_pass)
+                         no_pass=args.no_pass, ci_token=args.ci_token)
 
     if not args.no_pass:
         if args.passwd:
@@ -64,6 +184,12 @@ def main():
             server.set_password(new_pw)
             print(f"Пароль преподавателя: {new_pw}")
             print("(сохраните его — показать второй раз я не смогу)")
+
+    # Симулятор velxio: поднимаем вместе с СДО (--sim)
+    sim_lines, sim_started = [], {}
+    if args.sim is not None:
+        sim_dir = args.sim or os.path.join(os.path.dirname(_HERE), "velxio")
+        sim_lines, sim_started = _sim_autostart(sim_dir)
 
     # Информация о запуске
     hostname = socket.gethostname()
@@ -90,6 +216,8 @@ def main():
         state = m.get("state", "?")
         icon = "✅" if state == "ok" else "❌"
         print(f"    {icon} {m.get('name', m['id'])} ({m['id']}) — {state}")
+    for ln in sim_lines:
+        print("  " + ln)
     print(f"{'=' * 60}\n")
     print("  Остановка: Ctrl+C")
 
@@ -98,6 +226,9 @@ def main():
     except KeyboardInterrupt:
         print("\nОстановка...")
         server.server_close()
+        if sim_started:
+            _sim_stop(sim_started)
+            print("Симулятор остановлен (запущенные нами компоненты)")
 
 
 def _create_demo(core):
