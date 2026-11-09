@@ -258,7 +258,8 @@ try {
   $tp5 = curl.exe -s -b "$PWD\_ck.txt" "http://localhost:8099/task/$scnTid"
   Chk 'shlei table on task page' ($tp5 -match 'shlei-tbl' -and $tp5 -match 'name="loops"')
   Chk 'dnd upload field on task page' ($tp5 -match 'dnd-zone')
-  $nfi = ([regex]::Matches($tp5, 'type=.file.')).Count
+  # поля формы считаем по DND-обёртке (input баг-репорта не в счёт)
+  $nfi = ([regex]::Matches($tp5, 'class=.dnd-inp.')).Count
   if ($nfi -eq 1) { Write-Output 'OK   single file input (dropzone)' } else { Write-Output ('FAIL single file input: ' + $nfi); $script:fail++ }
   curl.exe -s -b "$PWD\_ck.txt" -F "task=$scnTid" -F 'calc=ok' -F 'loops=<tests\_loops.json' -F 'firmware=@tests\_fw1.bin' -F 'firmware=@tests\_fw2.bin' 'http://localhost:8099/api/submit' | Out-Null
   python -X utf8 tests\_chk_loops.py

@@ -110,7 +110,7 @@ try:
     chk("task: submit copies plan draft", "wcplan_" in tp)
     chk("task: shlei table widget", "shlei-tbl" in tp and 'name="loops"' in tp)
     chk("task: single drag&drop file field",
-        tp.count('type="file"') == 1 and "dnd-zone" in tp and "dnd-list" in tp)
+        tp.count('class="dnd-inp"') == 1 and "dnd-zone" in tp and "dnd-list" in tp)
     pp = curl("-b", "_e2e_s1.txt", "http://localhost:8093/plan/%s" % tid)
     chk("plan widget page", "wcplan_" in pp and "СЦ-01" in pp
         and "legend" in pp and "RO=false" in pp)
