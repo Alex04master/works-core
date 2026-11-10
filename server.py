@@ -131,6 +131,25 @@ def _sim_stop(started):
     time.sleep(1)
 
 
+def _ci_watch_start(port):
+    """Наблюдатель CI живёт вместе с СДО: стартует с сервером и гаснет
+    вместе с ним (сам завершается, если сервер выключили)."""
+    logf = None
+    try:
+        logf = open(os.path.join(_HERE, "_ci_watch.log"), "ab")
+        return subprocess.Popen(
+            [sys.executable, "-X", "utf8", os.path.join(_HERE, "ci.py"),
+             "watch", "--url", "http://localhost:%d" % port],
+            stdout=logf, stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+    except Exception as ex:
+        print("  (наблюдатель CI не запущен: %s)" % ex)
+        return None
+    finally:
+        if logf:
+            logf.close()
+
+
 def main():
     ap = argparse.ArgumentParser(description="works-core: раздача и сбор работ")
     ap.add_argument("--port", type=int, default=8080, help="порт (по умолч. 8080)")
@@ -146,6 +165,12 @@ def main():
     ap.add_argument("--ci-token", default="",
                     help="токен CI для POST /_reload "
                          "(по умолч. файл _ci.token в хранилище)")
+    ap.add_argument("--ci-watch", action="store_true",
+                    help="запустить наблюдателя CI (ci.py watch) вместе "
+                         "с СДО")
+    ap.add_argument("--no-ci-watch", action="store_true",
+                    help="не запускать наблюдателя CI (по умолч. он "
+                         "запускается только для боевого хранилища)")
     args = ap.parse_args()
 
     # Хранилище
@@ -191,6 +216,16 @@ def main():
         sim_dir = args.sim or os.path.join(os.path.dirname(_HERE), "velxio")
         sim_lines, sim_started = _sim_autostart(sim_dir)
 
+    # Наблюдатель CI: стартует вместе с СДО и гаснет вместе с ним
+    # (по умолчанию — только для боевого хранилища; тестовые --store
+    # наблюдателя не получают)
+    watch_proc = None
+    want_watch = ((args.ci_watch and not args.no_ci_watch)
+                  or (store_path == os.path.join(_HERE, "данные")
+                      and not args.no_ci_watch))
+    if want_watch:
+        watch_proc = _ci_watch_start(args.port)
+
     # Информация о запуске
     hostname = socket.gethostname()
     ips = set()
@@ -218,6 +253,8 @@ def main():
         print(f"    {icon} {m.get('name', m['id'])} ({m['id']}) — {state}")
     for ln in sim_lines:
         print("  " + ln)
+    if watch_proc:
+        print("  Наблюдатель CI: запущен — гаснет вместе с сервером")
     print(f"{'=' * 60}\n")
     print("  Остановка: Ctrl+C")
 
@@ -225,7 +262,15 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nОстановка...")
+    finally:
         server.server_close()
+        if watch_proc:
+            try:
+                watch_proc.terminate()
+                watch_proc.wait(timeout=5)
+                print("Наблюдатель CI остановлен")
+            except Exception:
+                pass
         if sim_started:
             _sim_stop(sim_started)
             print("Симулятор остановлен (запущенные нами компоненты)")

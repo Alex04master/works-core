@@ -441,8 +441,22 @@ def watch(url, interval, token, stage_url="http://localhost:%d" % STAGE_PORT):
             "модули пойдут на боевой только после зелёного стенда")
     pending_prod = []   # модули, готовые к боевому деплою (prod был недоступен)
     snap = snapshot()
+    down = 0            # циклы, в которых боевой недоступен
     while True:
         time.sleep(interval)
+        # наблюдатель живёт вместе с сервером: сервер выключен —
+        # наблюдатель тоже завершается (штатный рестарт ~10 с
+        # переживается: 15 циклов = 30 с подряд недоступности)
+        c0, _ = _http(url + "/_login")
+        if c0 != 200:
+            down += 1
+            if down >= 15:
+                log("боевой недоступен %d циклов подряд — "
+                    "наблюдатель завершается (сервер выключен)"
+                    % down)
+                return
+        else:
+            down = 0
         try:
             now = snapshot()
         except Exception as e:
