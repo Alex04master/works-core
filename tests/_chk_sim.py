@@ -40,6 +40,10 @@ def registry():
     return json.loads(io.open(files[0], encoding="utf-8").read())
 
 
+# логины (тест сам получает свежие куки — хранилище может быть пересоздано)
+curl("-s", "-c", "_staff.txt", "-d", "pass=x", BASE + "/_staff_login")
+curl("-s", "-c", "_ck.txt", "-d", "student=s1", "-d", "next=/", BASE + "/_login")
+
 # 0) сброс состояния (тест можно перезапускать)
 curl("-s", "-b", "_staff.txt", "-d", "task=t1", "-d", "url=",
      BASE + "/staff/sim_set")

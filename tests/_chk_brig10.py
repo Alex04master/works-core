@@ -49,6 +49,15 @@ curl("-c", "_b10_st.txt", "-d", "pass=x", BASE + "/_staff_login")
 curl("-c", "_b10_ck.txt", "-d", "student=s1", "-d", "next=/",
      BASE + "/_login")
 
+# сброс формы t1 (после _chk_sim там обязательный файл — мешает сдаче)
+curl("-s", "-b", "_b10_st.txt", "--data-urlencode",
+     "form_json=" + json.dumps([{"тип": "text", "ключ": "justification",
+                                 "вопрос": "Обоснование",
+                                 "обязательно": True}],
+                               ensure_ascii=False),
+     "-d", "title=", "-d", "description=", "-d", "deadline=",
+     BASE + "/staff/edit_task/t1")
+
 # подготовка: s1 в бригаде BR10, бригады курса включены
 curl("-b", "_b10_st.txt", "-d", "student=s1", "-d", "course=c1",
      "-d", "brigade=BR10", BASE + "/staff/student_brigade")

@@ -65,10 +65,14 @@ python -X utf8 tests/_grade_test.py     &  rem unit-тесты ядра
 powershell -NoProfile -ExecutionPolicy Bypass -File tests/_test2.ps1   &  rem смоук, ~220 проверок
 python -X utf8 tests/_scn_e2e.py        &  rem E2E сценариев (Node нужен для экспорта карточек)
 python -X utf8 tests/_chk_ci.py         &  rem CI: горячая перезагрузка модулей (свой сервер :8097)
-python -X utf8 tests/_chk_sim.py        &  rem симулятор: карточка, URL, iframe (свой сервер :8099)
 python -X utf8 tests/_chk_bugrep.py     &  rem баг-репорты: отправка, скриншот, панель (свой сервер :8096)
-python -X utf8 tests/_chk_brig9.py      &  rem бригады: вкл/выкл преподавателем (свой сервер :8099)
-python -X utf8 tests/_chk_brig10.py     &  rem бригады: выключатель для курса (свой сервер :8099)
+python -X utf8 tests/_chk_sim.py        &  rem симулятор: карточка, URL, iframe (сервер :8099 нужен заранее*)
+python -X utf8 tests/_chk_brig9.py      &  rem бригады: вкл/выкл преподавателем (сервер :8099 нужен заранее*)
+python -X utf8 tests/_chk_brig10.py     &  rem бригады: выключатель для курса (сервер :8099 нужен заранее*)
+python -X utf8 tests/_chk_plag.py       &  rem антиплагиат: копия/нейротекст (сервер :8096 нужен заранее*)
+```
+
+`*` Тесты `_chk_sim`, `_chk_brig9/10`, `_chk_plag` не поднимают сервер сами — сначала запустите его: `python -X utf8 server.py --port 8099 --store _teststore --no-pass --demo` (для `_chk_plag` — порт `8096` и хранилище `_plag_store`); порт и хранилище переопределяются переменными `PORT`/`STORE`.
 ```
 
 ## CI: правки без остановки занятия (`ci.py`)

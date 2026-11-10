@@ -58,6 +58,15 @@ FORM = {"width": "24", "length": "18", "height": "4.2",
 curl("-c", "_br9_st.txt", "-d", "pass=x", BASE + "/_staff_login")
 curl("-c", "_br9_ck.txt", "-d", "student=s1", "-d", "next=/",
      BASE + "/_login")
+
+# сброс формы t1 (после _chk_sim там обязательный файл — мешает сдаче)
+curl("-s", "-b", "_br9_st.txt", "--data-urlencode",
+     "form_json=" + json.dumps([{"тип": "text", "ключ": "justification",
+                                 "вопрос": "Обоснование",
+                                 "обязательно": True}],
+                               ensure_ascii=False),
+     "-d", "title=", "-d", "description=", "-d", "deadline=",
+     BASE + "/staff/edit_task/t1")
 curl("-b", "_br9_st.txt", "-d", "student=s1", "-d", "course=c1",
      "-d", "brigade=BR9", BASE + "/staff/student_brigade")
 db = registry()
