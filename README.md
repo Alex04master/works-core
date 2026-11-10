@@ -67,6 +67,7 @@ python -X utf8 tests/_scn_e2e.py        &  rem E2E сценариев (Node ну
 python -X utf8 tests/_chk_ci.py         &  rem CI: горячая перезагрузка модулей (свой сервер :8097)
 python -X utf8 tests/_chk_bugrep.py     &  rem баг-репорты: отправка, скриншот, панель (свой сервер :8096)
 python -X utf8 tests/_chk_ofdup.py      &  rem офлайн: защита от повторного импорта (свой сервер :8094)
+python -X utf8 tests/_chk_cpdup.py      &  rem пакет курса: защита от повторного импорта (свой сервер :8093)
 python -X utf8 tests/_chk_sim.py        &  rem симулятор: карточка, URL, iframe (сервер :8099 нужен заранее*)
 python -X utf8 tests/_chk_brig9.py      &  rem бригады: вкл/выкл преподавателем (сервер :8099 нужен заранее*)
 python -X utf8 tests/_chk_brig10.py     &  rem бригады: выключатель для курса (сервер :8099 нужен заранее*)

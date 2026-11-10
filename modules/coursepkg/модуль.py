@@ -37,6 +37,8 @@ def register(ctx):
             'accept=".zip,application/zip" required></label></p>'
             '<p><label><input type="checkbox" name="results" checked> '
             'Включая результаты (сдачи, вердикты, файлы)</label></p>'
+            '<p><label><input type="checkbox" name="allowdup"> '
+            'Разрешить повторный импорт (создать копию курса)</label></p>'
             '<p><button>Импортировать курс</button></p></form></details>')
 
     def _export_btn(cid="", **kw):
@@ -131,6 +133,10 @@ def register(ctx):
             handler._redirect("/staff?err=%s"
                               % urllib.parse.quote("файл пакета не передан"))
             return handler._SENT
+        import hashlib
+        import time as _time
+        h = hashlib.sha256(raw).hexdigest()
+        allowdup = data.get("allowdup", "") in ("on", "1", "да")
         try:
             zf = zipfile.ZipFile(_io.BytesIO(raw))
             names = [n for n in zf.namelist() if not n.endswith("/")]
@@ -151,6 +157,18 @@ def register(ctx):
         except Exception as ex:
             handler._redirect("/staff?err=%s"
                               % urllib.parse.quote(str(ex)[:120]))
+            return handler._SENT
+
+        # защита от повторного импорта того же пакета
+        regs = ctx.kv_load("импорты", {})
+        if not allowdup and h in regs:
+            rec = regs[h]
+            handler._redirect("/staff?err=%s" % urllib.parse.quote(
+                "этот пакет уже импортирован %s (курс «%s», id %s) — "
+                "отметьте «разрешить повторный импорт», чтобы создать копию"
+                % (_time.strftime("%d.%m %H:%M",
+                                  _time.localtime(rec.get("когда", 0))),
+                   rec.get("название", "?"), rec.get("курс", "?"))))
             return handler._SENT
 
         db = ctx._core.db
@@ -265,6 +283,10 @@ def register(ctx):
                   {"курс": new_cid, "название": course.get("title", ""),
                    "занятий": len(lessons), "заданий": len(tasks),
                    "сдач": len(subs), "файлов": n_files}, handler=handler)
+        regs = ctx.kv_load("импорты", {})
+        regs[h] = {"когда": _time.time(), "курс": new_cid,
+                   "название": course.get("title", "")}
+        ctx.kv_save("импорты", regs)
         handler._redirect("/staff/course/%s" % new_cid)
         return handler._SENT
 
