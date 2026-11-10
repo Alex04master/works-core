@@ -1066,7 +1066,35 @@ def _issue_form(ctx):
 
 # ── Разбор файла работы ──────────────────────────────────────────────────
 
-def _import_one(ctx, handler, up, for_staff, current_sid):
+def _work_hash(payload):
+    """Стабильный хеш содержимого работы (порядок ключей не важен)."""
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        .encode("utf-8")).hexdigest()
+
+
+def _dup_get(ctx, h):
+    """Запись реестра импортов по хешу работы (или None)."""
+    if not h:
+        return None
+    return ctx.kv_load("импорты", {}).get(h)
+
+
+def _dup_put(ctx, h, sid, tid, ver, who):
+    regs = ctx.kv_load("импорты", {})
+    regs[h] = {"когда": time.time(), "sid": sid, "tid": tid,
+               "версия": ver, "кто": who}
+    ctx.kv_save("импорты", regs)
+
+
+def _fmt_when(ts):
+    try:
+        return time.strftime("%d.%m %H:%M", time.localtime(ts))
+    except Exception:
+        return "?"
+
+
+def _import_one(ctx, handler, up, for_staff, current_sid, allow_dup=False):
     """Разобрать один файл работы.
 
     Возвращает словарь: {"ok": True, "info": …} при успехе;
@@ -1084,6 +1112,11 @@ def _import_one(ctx, handler, up, for_staff, current_sid):
     if payload.get("формат") != FMT or payload.get("версия") != VER:
         return {"ok": False,
                 "err": "не файл работы works-core (проверьте формат и версию)"}
+    h = _work_hash(payload)
+    if not allow_dup:
+        rec = _dup_get(ctx, h)
+        if rec:
+            return {"ok": False, "dup": True, "rec": rec}
     tid = str(payload.get("задание") or "")
     task = ctx.get_task(tid)
     if not task:
@@ -1094,6 +1127,7 @@ def _import_one(ctx, handler, up, for_staff, current_sid):
                                      current_sid)
     except _Manual:
         return {"ok": False, "manual": True, "payload": payload,
+                "хеш": h,
                 "fio": str(stu_in.get("fio") or "?"),
                 "группа": str(stu_in.get("group") or "?"),
                 "курс": str(payload.get("курс") or ""),
@@ -1103,6 +1137,8 @@ def _import_one(ctx, handler, up, for_staff, current_sid):
     info, err = _do_submit(ctx, task, payload, sid, for_staff, handler, warn)
     if err:
         return {"ok": False, "err": err}
+    _dup_put(ctx, h, sid, task.get("id", ""), info.get("версия", 0),
+             "преподаватель" if for_staff else "студент")
     return {"ok": True, "info": info}
 
 
@@ -1335,6 +1371,7 @@ def register(ctx):
                          'выберите файл .json</div>'))
         rows = []
         n_ok = 0
+        dups = 0
         for up in ups:
             try:
                 r = _import_one(ctx, handler, up, False, sid)
@@ -1344,6 +1381,14 @@ def register(ctx):
             if r.get("ok"):
                 n_ok += 1
                 rows.append((up.name, True, r["info"]))
+            elif r.get("dup"):
+                rec = r.get("rec") or {}
+                dups += 1
+                rows.append((up.name, False,
+                             "эта работа уже загружена (%s, версия %d) — "
+                             "повтор не требуется"
+                             % (_fmt_when(rec.get("когда", 0)),
+                                rec.get("версия", 0))))
             elif r.get("manual"):
                 rows.append((up.name, False,
                              "работа без подписи, ФИО не совпало — загрузите "
@@ -1353,8 +1398,10 @@ def register(ctx):
                              r.get("err", "неизвестная ошибка")))
         body = ('<p><a href="/offline">← Загрузить ещё</a> · '
                 '<a href="/">На главную</a></p>'
-                '<h2>Результат загрузки (%d из %d принято)</h2>%s'
-                % (n_ok, len(ups), _rows_table(rows)))
+                '<h2>Результат загрузки (%d из %d принято%s)</h2>%s'
+                % (n_ok, len(ups),
+                   (", дубликатов пропущено %d" % dups) if dups else "",
+                   _rows_table(rows)))
         return ctx.render_page("📥 Офлайн-сдача — результат", body)
 
     # ── Панель преподавателя ─────────────────────────────────────────
@@ -1535,6 +1582,10 @@ def register(ctx):
             'Спорные работы будут предложены к ручному выбору '
             'студента.</p>'
             '<p>' + _OF_DND + '</p>'
+            '<p><label class="hint" style="display:inline-flex;gap:6px;'
+            'align-items:center"><input type="checkbox" name="allowdup" '
+            'value="1"> разрешить повторный импорт (принять дубликаты как '
+            'новые версии)</label></p>'
             '<p><button>📥 Импортировать</button></p></form>'
             + _staff_works_section(ctx)
             + _staff_sim_section(ctx) + _staff_tokens_section(ctx))
@@ -1547,6 +1598,7 @@ def register(ctx):
     @ctx.add_route("POST", "/staff/offline/import", access="staff")
     def import_post(handler, params):
         data = handler._parse_post()
+        allowdup = str(data.get("allowdup") or "") == "1"
         ups = _as_uploads(data.get("work"))
         if not ups:
             return ctx.render_page(
@@ -1559,14 +1611,26 @@ def register(ctx):
         items = []
         rows = []
         total = 0
+        dups = 0
         for up in ups:
             try:
-                r = _import_one(ctx, handler, up, True, "")
+                r = _import_one(ctx, handler, up, True, "",
+                                allow_dup=allowdup)
             except Exception as ex:
                 r = {"ok": False, "err": "сбой обработки (%s)"
                      % type(ex).__name__}
             if r.get("ok"):
                 rows.append((up.name, True, r["info"]))
+            elif r.get("dup"):
+                rec = r.get("rec") or {}
+                stu = ctx.get_student(rec.get("sid", "")) or {}
+                dups += 1
+                rows.append((up.name, False,
+                             "дубликат — уже импортирована %s (%s, версия %d)"
+                             " — пропущена"
+                             % (_fmt_when(rec.get("когда", 0)),
+                                stu.get("fio", "?"),
+                                rec.get("версия", 0))))
             elif r.get("manual"):
                 size = len(json.dumps(r["payload"], ensure_ascii=False))
                 if total + size > MAX_BATCH:
@@ -1578,7 +1642,8 @@ def register(ctx):
                 items.append({"i": len(items), "файл": up.name,
                               "payload": r["payload"], "fio": r["fio"],
                               "группа": r["группа"], "курс": r["курс"],
-                              "задание": r["задание"]})
+                              "задание": r["задание"],
+                              "хеш": r.get("хеш", "")})
                 rows.append((up.name, None,
                              "студент не распознан — выберите вручную ниже"))
             else:
@@ -1588,9 +1653,10 @@ def register(ctx):
             pend[batch_id] = {"создан": time.time(), "items": items}
             ctx.kv_save("pending", pend)
         body = ('<p><a href="/staff/offline">← Импортировать ещё</a></p>'
-                '<h2>Результат импорта (%d из %d принято)</h2>%s'
-                % (sum(1 for _n, ok, _i in rows if ok), len(rows),
-                   _rows_table(rows)))
+                '<h2>Результат импорта (принято %d%s из %d)</h2>%s'
+                % (sum(1 for _n, ok, _i in rows if ok),
+                   (", дубликатов пропущено %d" % dups) if dups else "",
+                   len(rows), _rows_table(rows)))
         if items:
             body += _pending_form(ctx, batch_id, items)
         return ctx.render_page("📥 Импорт работ — результат", body, staff=True)
@@ -1619,6 +1685,12 @@ def register(ctx):
                 if not sel:
                     rest.append(it)
                     continue
+                rec = _dup_get(ctx, str(it.get("хеш") or ""))
+                if rec:
+                    rows.append((it.get("файл", "?"), False,
+                                 "дубликат — уже импортирована %s — пропущена"
+                                 % _fmt_when(rec.get("когда", 0))))
+                    continue
                 payload = it.get("payload") or {}
                 task = ctx.get_task(str(payload.get("задание") or ""))
                 if not task:
@@ -1631,6 +1703,9 @@ def register(ctx):
                     rows.append((it.get("файл", "?"), False, err))
                     rest.append(it)
                 else:
+                    _dup_put(ctx, str(it.get("хеш") or ""), sel,
+                             task.get("id", ""), info.get("версия", 0),
+                             "преподаватель (вручную)")
                     rows.append((it.get("файл", "?"), True, info))
             if rest:
                 batch["items"] = rest
