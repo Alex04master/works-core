@@ -119,10 +119,15 @@ def register(ctx):
                  "Занятие: %s" % (lesson or {}).get("title", ""),
                  "Курс: %s" % (course or {}).get("title", "")]
         if brig:
-            names = []
+            names, seen = [], set()
             for pid in (s.get("participants") or []):
                 st = students.get(pid)
                 names.append(st["fio"] if st else str(pid))
+                seen.add(pid)
+            for sid2, st2 in students.items():
+                if ((st2.get("бригада") or "").strip() == brig
+                        and sid2 not in seen):
+                    names.append(st2.get("fio") or sid2)
             lines.append("Бригада: %s — участники: %s"
                          % (brig, ", ".join(names) or "-"))
             st0 = students.get(s.get("student", ""))

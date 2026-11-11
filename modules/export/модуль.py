@@ -24,17 +24,36 @@ def register(ctx):
 
         buf = io.StringIO()
         w = csv.writer(buf, delimiter=";")
-        w.writerow(["студент", "группа", "задание", "статус", "вердикт",
-                    "балл", "версия", "время", "просрочено"])
+        w.writerow(["студент", "группа", "бригада", "сдавали", "задание",
+                    "статус", "вердикт", "балл", "версия", "время",
+                    "просрочено"])
         for sub in ctx.list_submissions():
             task = tasks.get(sub.get("task", ""))
             if not task:
                 continue
             st = students.get(sub.get("student", ""), {})
+            brig = (sub.get("бригада") or "").strip()
+            who = ""
+            if brig:
+                ids, seen = [], set()
+                for pid in (sub.get("participants") or []):
+                    if pid and pid not in seen:
+                        seen.add(pid)
+                        ids.append(pid)
+                for sid2, st2 in students.items():
+                    if ((st2.get("бригада") or "").strip() == brig
+                            and sid2 not in seen):
+                        seen.add(sid2)
+                        ids.append(sid2)
+                who = " / ".join(
+                    (students.get(p) or {}).get("fio", str(p))
+                    for p in ids)
             for v in sub.get("versions", []):
                 w.writerow([
                     st.get("fio", sub.get("student", "")),
                     st.get("group", ""),
+                    brig,
+                    who,
                     task.get("title", ""),
                     sub.get("status", ""),
                     v.get("verdict") or "",

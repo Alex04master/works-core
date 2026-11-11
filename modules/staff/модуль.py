@@ -1012,21 +1012,44 @@ def register(ctx):
                 ", ".join(str(x) for x in fl))
 
         late_s = " ⏰ сдано после срока" if v.get("просрочено") else ""
+        brig = (sub.get("бригада") or "").strip()
+        who_h = student["fio"] if student else "?"
+        who_line = ""
+        if brig:
+            ids, seen = [], set()
+            for pid in (sub.get("participants") or []):
+                if pid and pid not in seen:
+                    seen.add(pid)
+                    ids.append(pid)
+            for st in ctx.list_students():
+                pid = st.get("id", "")
+                if ((st.get("бригада") or "").strip() == brig
+                        and pid and pid not in seen):
+                    seen.add(pid)
+                    ids.append(pid)
+            names = []
+            for pid in ids:
+                st = ctx.get_student(pid)
+                names.append(st["fio"] if st else str(pid))
+            who_h = "Бригада «%s»" % brig
+            if names:
+                who_line = ('<p class="hint">Сдавали: %s</p>'
+                            % _e(", ".join(names)))
         body = (
             '<p><a href="/staff/task/%s">%s</a></p>'
             '<div class="staff-card"><h2>%s</h2>'
-            '<p>Версия %d, %s%s</p>'
+            '<p>Версия %d, %s%s</p>%s'
             '<p class="hint">Версии: %s</p>%s</div>'
             '<h2>Ответы</h2>'
             '<table class="staff-table"><tr><th>Поле</th><th>Ответ</th></tr>'
             '%s</table>%s%s') % (
                 _e(tid),
                 _e(task["title"] if task else ""),
-                _e(student["fio"] if student else "?"),
-                v.get("n", 0), v.get("time", ""), late_s,
+                _e(who_h),
+                v.get("n", 0), v.get("time", ""), late_s, who_line,
                 vlinks or "-", status_info,
                 answer_rows, files_html, verdict_form)
-        return _page(ctx, "Сдача: %s" % (student["fio"] if student else "?"), body)
+        return _page(ctx, "Сдача: %s" % who_h, body)
 
     # ── Вердикт ──────────────────────────────────────────────────────
     @ctx.add_route("POST", "/staff/verdict", access="staff")
