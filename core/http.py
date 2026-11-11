@@ -86,6 +86,9 @@ DRAFT_JS = """<script>
     if(document.hidden&&dirty){saveLocal();saveServer();dirty=false;}});
   setInterval(function(){
     if(dirty){saveLocal();saveServer();dirty=false;}},60000);
+  /* живые обновления просят спасти черновик перед авто-перезагрузкой */
+  document.addEventListener('wc-draft-save',function(){
+    saveLocal();saveServer();dirty=false;});
   if(!localStorage.getItem(K)){
     fetch('/api/draft?task='+encodeURIComponent(T))
       .then(function(r){return r.json();})

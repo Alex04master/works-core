@@ -75,6 +75,8 @@ need("/api/rev" in b, "JS живых обновлений на странице 
 b = stu_op.open(BASE + "/task/t1", timeout=10).read() \
     .decode("utf-8", "replace")
 need("/api/rev" in b, "JS живых обновлений на странице задания")
+need(b.count("wc-draft-save") >= 2,
+     "связка: LIVE_JS шлёт wc-draft-save, DRAFT_JS ловит")
 
 # сдача -> rev растёт
 r0 = rev()

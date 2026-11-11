@@ -138,7 +138,8 @@ def _ci_watch_start(port):
     try:
         logf = open(os.path.join(_HERE, "_ci_watch.log"), "ab")
         return subprocess.Popen(
-            [sys.executable, "-X", "utf8", os.path.join(_HERE, "ci.py"),
+            [sys.executable, "-u", "-X", "utf8",
+     os.path.join(_HERE, "ci.py"),
              "watch", "--url", "http://localhost:%d" % port],
             stdout=logf, stderr=subprocess.STDOUT,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)

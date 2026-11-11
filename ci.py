@@ -439,8 +439,34 @@ def snapshot():
     return snap
 
 
+def _watch_lock_acquire():
+    """Один наблюдатель на машину. Возвращает True если захватили.
+
+    Осиротевший наблюдатель (сервер убит жёстко) продолжает работать
+    корректно - он сам следит за боевым. Лишние экземпляры выходят.
+    """
+    lock = os.path.join(_HERE, "_ci_watch.lock")
+    if os.path.exists(lock):
+        try:
+            old = int(open(lock, encoding="utf-8").read().strip())
+            os.kill(old, 0)  # жив?
+            return False      # уже работает другой наблюдатель
+        except (ValueError, OSError, ProcessLookupError, PermissionError):
+            pass              # битый/мёртвый замок - перезапишем
+    try:
+        open(lock, "w", encoding="utf-8").write(str(os.getpid()))
+    except OSError:
+        pass
+    import atexit
+    atexit.register(lambda: os.path.exists(lock) and os.remove(lock))
+    return True
+
+
 def watch(url, interval, token, stage_url="http://localhost:%d" % STAGE_PORT):
-    log("watch: конвейер стенд->боевой (интервал %s с)" % interval)
+    if not _watch_lock_acquire():
+        log("watch: наблюдатель уже запущен - выхожу (один экземпляр)")
+        return
+    log("watch: перезапуск стенда->боевого (пауза %s с)" % interval)
     log("боевой: %s | стенд: %s" % (url, stage_url))
     if not start_stage(quiet=True):
         log("FAIL стенд не поднялся - конвейер всё равно работает: "

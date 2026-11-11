@@ -1184,8 +1184,27 @@ class Core:
     get().then(function(j){
       if(typeof j.rev!=='number'||j.rev===cur)return;
       cur=j.rev;
-      if(dirty)show();else location.reload();
+      if(!dirty){location.reload();return;}
+      var f=document.querySelector('form.task-form');
+      if(f&&!hasFiles(f)){
+        /* несохранённый ввод есть, но файлов не выбрано: черновик
+           можно спасти автоматически (форма восстановится после
+           перезагрузки из черновика) */
+        try{document.dispatchEvent(
+          new CustomEvent('wc-draft-save'));}catch(e){}
+        setTimeout(function(){location.reload();},1000);
+      }else{
+        /* в форме выбраны файлы - черновик их не сохранит,
+           оставляем решение за человеком */
+        show();
+      }
     }).catch(function(){});
+  }
+  function hasFiles(f){
+    var ins=f.querySelectorAll('input[type=file]');
+    for(var i=0;i<ins.length;i++)
+      if(ins[i].files&&ins[i].files.length)return true;
+    return false;
   }
   function dirtyWatch(e){
     var t=e.target;if(!t||!t.tagName)return;
