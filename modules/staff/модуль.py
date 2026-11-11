@@ -8,6 +8,9 @@ from datetime import datetime
 TITLE = "Панель преподавателя"
 
 
+_BR_SAVE_JS = '(function(){\nvar D=__DATA__;D.removed=[];\nvar wrap=document.getElementById(\'wc-br-rows\'),\n    poolEl=document.getElementById(\'wc-br-pool\'),\n    msg=document.getElementById(\'wc-br-msg\');\nfunction esc(t){return String(t).replace(/[&<>"]/g,function(c){\n  return {\'&\':\'&amp;\',\'<\':\'&lt;\',\'>\':\'&gt;\',\'"\':\'&quot;\'}[c];});}\nfunction addOpts(){var o=\'<option value="">+ студент…</option>\';\n  D.pool.forEach(function(p){o+=\'<option value="\'+p.sid+\'">\'+esc(p.fio)+\'</option>\';});\n  return o;}\nfunction render(){\n  var h=\'\';\n  D.rows.forEach(function(r,i){\n    h+=\'<div style="border:1px solid #dbe4ef;border-radius:10px;padding:10px 12px;margin:8px 0\'\n      +(r.off?\';opacity:.55\':\'\')+\'">\';\n    h+=\'<input class="wc-br-name" data-i="\'+i+\'" value="\'+esc(r.name)+\'" placeholder="имя бригады" style="width:180px;padding:6px 8px"> \';\n    h+=\'<span class="hint">\'+r.members.length+\'/\'+D.bmax+\'</span> \';\n    h+=\'<label class="hint" style="display:inline-flex;gap:4px;align-items:center;margin-left:6px"><input type="checkbox" class="wc-br-off" data-i="\'+i+\'"\'+(r.off?\' checked\':\'\')+\'> закрыта для сдач</label> \';\n    h+=\'<button type="button" class="btn-sm btn-danger wc-br-del" data-i="\'+i+\'" title="распустить - студенты останутся без бригады">убрать бригаду</button>\';\n    h+=\'<p style="margin:6px 0 0">\';\n    r.members.forEach(function(m,j){\n      h+=\'<span style="display:inline-flex;gap:4px;align-items:center;background:#eef2f8;border:1px solid #c9d6e8;border-radius:999px;padding:2px 9px;margin:2px 6px 2px 0">\'+esc(m.fio)\n        +\'<a href="#" class="wc-br-x" data-i="\'+i+\'" data-j="\'+j+\'" style="color:#a33;text-decoration:none;font-weight:700">x</a></span>\';});\n    h+=\'<select class="wc-br-add" data-i="\'+i+\'" style="max-width:230px;vertical-align:middle">\'+addOpts()+\'</select>\';\n    h+=\'</p></div>\';});\n  wrap.innerHTML=h;\n  poolEl.textContent=D.pool.map(function(p){return p.fio;}).join(\', \')||\'все распределены\';\n}\nwrap.addEventListener(\'input\',function(e){var t=e.target;\n  if(t.classList&&t.classList.contains(\'wc-br-name\'))\n    D.rows[+t.getAttribute(\'data-i\')].name=t.value;});\nwrap.addEventListener(\'change\',function(e){var t=e.target;\n  if(t.classList&&t.classList.contains(\'wc-br-off\'))\n    D.rows[+t.getAttribute(\'data-i\')].off=t.checked;\n  else if(t.classList&&t.classList.contains(\'wc-br-add\')&&t.value){\n    var i=+t.getAttribute(\'data-i\'),sid=t.value,pi=-1;\n    D.pool.forEach(function(p,j){if(p.sid===sid)pi=j;});\n    if(pi>=0){D.rows[i].members.push(D.pool.splice(pi,1)[0]);render();}}});\nwrap.addEventListener(\'click\',function(e){\n  var t=e.target;if(!t.classList)return;\n  if(t.classList.contains(\'wc-br-x\')){e.preventDefault();\n    var i=+t.getAttribute(\'data-i\'),j=+t.getAttribute(\'data-j\');\n    D.pool.push(D.rows[i].members.splice(j,1)[0]);render();}\n  else if(t.classList.contains(\'wc-br-del\')){var i=+t.getAttribute(\'data-i\');\n    var r=D.rows[i];\n    [r.old,r.name].forEach(function(nm){nm=(nm||\'\').trim();\n      if(nm&&D.removed.indexOf(nm)<0)D.removed.push(nm);});\n    r.members.forEach(function(m){D.pool.push(m);});\n    D.rows.splice(i,1);render();}});\ndocument.getElementById(\'wc-br-new\').addEventListener(\'click\',function(){\n  var n=1,names=D.rows.map(function(r){return (r.name||\'\').trim().toLowerCase();});\n  while(names.indexOf(\'бригада-\'+n)>=0||names.indexOf(\'бригада \'+n)>=0)n++;\n  D.rows.push({old:\'\',name:\'Бригада-\'+n,members:[],off:false});render();});\ndocument.getElementById(\'wc-br-save\').addEventListener(\'click\',function(){\n  var seen={},i,r,nm;\n  for(i=0;i<D.rows.length;i++){r=D.rows[i];nm=(r.name||\'\').trim();\n    if(!nm){msg.textContent=\'У бригады пустое имя\';return;}\n    if(seen[nm.toLowerCase()]){msg.textContent=\'Повторное имя бригады: \'+nm;return;}\n    seen[nm.toLowerCase()]=1;\n    if(r.members.length>D.bmax){msg.textContent=\'В бригаде \'+nm+\' \'+r.members.length+\' человек - больше лимита \'+D.bmax;return;}}\n  msg.textContent=\'Сохраняю…\';\n  fetch(\'/staff/brigades_save\',{method:\'POST\',\n    headers:{\'Content-Type\':\'application/x-www-form-urlencoded\'},\n    body:\'course=\'+encodeURIComponent(D.cid)+\'&data=\'+encodeURIComponent(JSON.stringify({rows:D.rows,removed:D.removed}))})\n    .then(function(r2){return r2.json();})\n    .then(function(j){if(j.ok){msg.textContent=\'Сохранено\';setTimeout(function(){location.reload();},400);}\n      else{msg.textContent=(j.err||\'ошибка\');}});});\nrender();\n})();'
+
+
 def register(ctx):
     def _extra_cards(event, **kw):
         """HTML-фрагменты от модулей-подписчиков (кнопки, карточки)."""
@@ -387,59 +390,47 @@ def register(ctx):
         ) % (group_rows, groups_status, _e(cid))
         bon = ctx.brigades_enabled(cid)
         bmax = ctx.brigade_max(cid)
-        teams = {}
+        byname = {}
+        br_pool = []
         for s in ctx.list_students():
+            sid = s.get("id", "")
+            if not ctx.can_access(cid, sid):
+                continue
+            item = {"sid": sid, "fio": s.get("fio", "")}
             b = (s.get("бригада") or "").strip()
             if b:
-                teams.setdefault(b, []).append(s.get("fio", ""))
+                byname.setdefault(b, []).append(item)
+            else:
+                br_pool.append(item)
+        br_rows = [{"old": b, "name": b, "off": ctx.brigade_off(b),
+                    "members": byname[b]} for b in sorted(byname)]
         max_form = ""
         if bon:
-            team_blocks = ""
-            for b, m in sorted(teams.items()):
-                boff = ctx.brigade_off(b)
-                team_blocks += (
-                    '<div class="field-block" style="margin:8px 0%s">'
-                    '<p><b>👥 %s</b>%s — %d чел. (лимит %d): %s</p>'
-                    '<form method="post" action="/staff/brigade_state" '
-                    'style="display:inline">'
-                    '<input type="hidden" name="course" value="%s">'
-                    '<input type="hidden" name="name" value="%s">'
-                    '<input type="hidden" name="act" value="%s">'
-                    '<button class="btn-sm btn-secondary">%s</button></form> '
-                    '<form method="post" action="/staff/brigade_rename" '
-                    'style="display:inline">'
-                    '<input type="hidden" name="course" value="%s">'
-                    '<input type="hidden" name="old" value="%s">'
-                    '<input type="text" name="new" value="%s" '
-                    'style="width:150px;padding:6px 8px">'
-                    '<button class="btn-sm">Переименовать</button></form> '
-                    '<form method="post" action="/staff/brigade_delete" '
-                    'style="display:inline">'
-                    '<input type="hidden" name="course" value="%s">'
-                    '<input type="hidden" name="name" value="%s">'
-                    '<button class="btn-sm btn-danger">Распустить</button></form>'
-                    '</div>'
-                ) % (';opacity:.55' if boff else "",
-                     _e(b),
-                     ' <span class="reason">⛔ отключена</span>' if boff else "",
-                     len(m), bmax, _e(", ".join(m)),
-                     _e(cid), _e(b), "on" if boff else "off",
-                     '▶️ Включить' if boff else '⏸ Отключить',
-                     _e(cid), _e(b), _e(b), _e(cid), _e(b))
-            if not team_blocks:
-                team_blocks = (
-                    '<p class="hint">Пока нет бригад. Создайте состав: '
-                    'впишите название бригады студенту в таблице '
-                    '«📋 Студенты» выше — или студенты зарегистрируются '
-                    'сами на странице курса.</p>')
-            max_form = (
-                '<form method="post" action="/staff/brigade_max">'
-                '<input type="hidden" name="course" value="%s">'
-                '<p><label>Максимальный состав бригады: '
-                '<input type="number" name="max" value="%d" min="1" max="20" '
-                'required></label></p>'
-                '<p><button>Сохранить</button></p></form>'
-            ) % (_e(cid), bmax)
+            br_data = json.dumps({"cid": cid, "bmax": bmax,
+                                  "rows": br_rows, "pool": br_pool},
+                                 ensure_ascii=False)
+            team_blocks = (
+                '<div id="wc-br-wrap">'
+                '<p class="hint">Внесите все изменения — переименуйте '
+                'бригады, соберите составы, добавьте студентов — и один '
+                'раз нажмите «💾 Сохранить бригады». Повторные имена '
+                'бригад запрещены; лимит состава: %d.</p>'
+                '<div id="wc-br-rows"></div>'
+                '<p style="margin:8px 0">'
+                '<button type="button" class="btn-sm" id="wc-br-new">'
+                '＋ Новая бригада</button> '
+                '<button type="button" class="btn-sm" id="wc-br-save">'
+                '💾 Сохранить бригады</button> '
+                '<span id="wc-br-msg" class="hint"></span></p>'
+                '<p class="hint">Без бригады: <span id="wc-br-pool">'
+                '</span></p></div>'
+                '<script>' + _BR_SAVE_JS + '</script>'
+            ) % bmax
+            team_blocks = team_blocks.replace("__DATA__", br_data)
+            if not br_rows:
+                team_blocks += ('<p class="hint">Бригад пока нет — добавьте '
+                                'первую кнопкой «＋ Новая бригада», затем '
+                                'добавьте в неё студентов.</p>')
         else:
             team_blocks = (
                 '<p class="hint">⛔ Бригады на курсе отключены: студенты '
@@ -1396,6 +1387,97 @@ def register(ctx):
                   {"курс": cid, "группа": grp, "зачислено": added},
                   handler=handler)
         handler._redirect("/staff/course/%s" % _e(cid))
+        return handler._SENT
+
+    @ctx.add_route("POST", "/staff/brigades_save", access="staff")
+    def brigades_save(handler, params):
+        """Применить таблицу бригад целиком (одно сохранение).
+
+        payload: {"rows": [{"old": "имя-до", "name": "имя", "off": bool,
+                            "members": [{"sid": "s1"}, …]}, …]}
+        Правила: имена бригад не повторяются; состав не больше лимита;
+        члены — студенты курса. Применяется: переименования (у студентов
+        и в списке выдачи), составы, расформирование убранных бригад,
+        флаги «закрыта для сдач».
+        """
+        data = handler._parse_post()
+        cid = data.get("course", "")
+        if not ctx.get_course(cid):
+            handler._send_json(200, {"ok": False, "err": "курс не найден"})
+            return handler._SENT
+        try:
+            payload = json.loads(data.get("data") or "{}")
+            rows = payload.get("rows") or []
+            removed = payload.get("removed") or []
+        except Exception:
+            handler._send_json(200, {"ok": False, "err": "битые данные"})
+            return handler._SENT
+        if not isinstance(rows, list):
+            handler._send_json(200, {"ok": False, "err": "битые данные"})
+            return handler._SENT
+        bmax = ctx.brigade_max(cid)
+
+        def bad(err):
+            handler._send_json(200, {"ok": False, "err": err})
+            return handler._SENT
+
+        names = []
+        for r in rows:
+            if not isinstance(r, dict):
+                return bad("битые данные")
+            nm = str(r.get("name") or "").strip()
+            if not nm:
+                return bad("у бригады пустое имя")
+            if nm.lower() in names:
+                return bad("повторное имя бригады: «%s»" % nm)
+            names.append(nm.lower())
+            mem = r.get("members") or []
+            if len(mem) > bmax:
+                return bad("в бригаде «%s» %d человек — больше лимита %d"
+                           % (nm, len(mem), bmax))
+        for r in rows:
+            for m in (r.get("members") or []):
+                sid = str((m or {}).get("sid") or "")
+                if not ctx.can_access(cid, sid):
+                    return bad("студент не из этого курса: %s"
+                               % ((m or {}).get("fio") or sid or "?"))
+
+        # 1) переименования (студенты + списки выдачи + флаг отключения)
+        for r in rows:
+            old = str(r.get("old") or "").strip()
+            nm = str(r.get("name") or "").strip()
+            if old and old != nm:
+                ctx._core.brigade_rename(old, nm)
+        # 2) составы
+        for r in rows:
+            nm = str(r.get("name") or "").strip()
+            for m in (r.get("members") or []):
+                ctx._core.student_set_brigade(str(m.get("sid") or ""), nm)
+        # 3) убранные из составов и расформированные бригады
+        keep = {str(m.get("sid") or "") for r in rows
+                for m in (r.get("members") or [])}
+        new_names = {str(r.get("name") or "").strip() for r in rows}
+        old_names = {str(r.get("old") or "").strip() for r in rows}
+        old_names.discard("")
+        gone = set(str(x or "").strip() for x in removed)
+        gone |= old_names | new_names
+        gone.discard("")
+        for s in ctx.list_students():
+            sid = s.get("id", "")
+            if not ctx.can_access(cid, sid) or sid in keep:
+                continue
+            cur = (s.get("бригада") or "").strip()
+            if cur and cur in gone:
+                ctx._core.student_set_brigade(sid, "")
+        # 4) флаги «закрыта для сдач»
+        for r in rows:
+            ctx._core.brigade_set_enabled(str(r.get("name") or "").strip(),
+                                          not bool(r.get("off")))
+        ctx.save()
+        ctx.audit("сохранены бригады",
+                  {"курс": cid, "бригад": len(rows),
+                   "студентов в бригадах": len(keep)}, handler=handler)
+        handler._send_json(200, {"ok": True})
         return handler._SENT
 
     # ── Удаление курса ───────────────────────────────────────────────
