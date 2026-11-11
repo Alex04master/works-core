@@ -165,6 +165,16 @@ def register(ctx):
             return _page(ctx, "Курс не найден", "<p>Такого курса нет.</p>")
         lessons = [l for l in ctx.list_lessons() if l.get("course") == cid]
         students = ctx.list_students()
+        # Скрыть студентов, не зачисленных на этот курс: доступ =
+        # индивидуальное зачисление и/или группы. Если курс открыт всем
+        # (ничего не задано) - показываем всех. Полный список остаётся
+        # в карточке «Зачисление».
+        students_all = students
+        enr_filter = bool((course.get("студенты") or [])
+                          or [g for g in (course.get("группы") or []) if g])
+        if enr_filter:
+            students = [s for s in students_all
+                        if ctx.can_access(cid, s["id"])]
         dc = "return confirm('Удалить занятие?')"
         ds = "return confirm('Удалить студента?')"
 
@@ -207,9 +217,15 @@ def register(ctx):
                     _ds, _e(s["fio"]), _e(s.get("group", "")),
                     _e(s["id"]), _e(cid), _e(brig), _e(s["id"]), ds)
 
+        st_hint = ""
+        if enr_filter:
+            st_hint = ('<p class="hint">Показаны зачисленные на курс: '
+                       '%d из %d. Полный список и зачисление — в карточке '
+                       '«Зачисление».</p>'
+                       % (len(students), len(students_all)))
         student_table = ""
         if students:
-            student_table = (
+            student_table = st_hint + (
                 '<details class="stu-list" open>'
                 '<summary>📋 Студенты (%d) — нажмите, чтобы сверить'
                 '</summary>'
@@ -237,7 +253,7 @@ def register(ctx):
 
         enrolled = set(course.get("студенты") or [])
         enroll_rows = ""
-        for s in students:
+        for s in students_all:
             in_course = s["id"] in enrolled
             _es = _e((s["fio"] + " " + s.get("group", "")).strip().lower())
             enroll_rows += (
@@ -271,7 +287,8 @@ def register(ctx):
             '<form method="post" action="/staff/enroll_all">'
             '<input type="hidden" name="course" value="%s">'
             '<p><button>Зачислить всех</button></p></form>'
-            '</div>') % (len(enrolled), len(students), len(students),
+            '</div>') % (len(enrolled), len(students_all),
+                         len(students_all),
                          enroll_rows, _e(cid))
 
         body = (
