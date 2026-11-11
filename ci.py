@@ -354,19 +354,23 @@ def stage():
 
 
 # ── promote: перезапуск боевого (только явная команда человека) ──────
-def _prod_pid_on(port):
-    """PID процесса, слушающего боевой порт (netstat). None если нет."""
+def _prod_pids_on(port):
+    """Список PID процессов, слушающих боевой порт (netstat)."""
     try:
         out = subprocess.run(["netstat", "-ano", "-p", "TCP"],
-                             capture_output=True, text=True).stdout
+                             capture_output=True,
+                             errors="replace").stdout or ""
     except Exception:
-        return None
+        return []
+    pids = []
     for line in out.splitlines():
         if ("LISTENING" in line and (":%d " % port) in line):
             parts = line.split()
             if parts and parts[-1].isdigit():
-                return int(parts[-1])
-    return None
+                pid = int(parts[-1])
+                if pid and pid not in pids:
+                    pids.append(pid)
+    return pids
 
 
 def promote(yes=False):
@@ -375,9 +379,9 @@ def promote(yes=False):
     остановкой процессов')."""
     url = "http://localhost:8080"
     code, _ = _http(url + "/_login")
-    pid = _prod_pid_on(8080)
-    log("promote: боевой сейчас HTTP %s, PID %s" % (code or "недоступен",
-                                                    pid or "нет"))
+    pids = _prod_pids_on(8080)
+    log("promote: боевой сейчас HTTP %s, PID %s" %
+        (code or "недоступен", ", ".join(str(p) for p in pids) or "нет"))
     if not yes:
         try:
             ans = input("Перезапустить БОЕВОЙ сервер :8080? [Д/н] ")
@@ -386,10 +390,12 @@ def promote(yes=False):
         if ans.strip().lower() not in ("", "y", "yes", "д", "да"):
             log("promote: отменено человеком")
             return False
-    if pid:
-        log("promote: останавливаю боевой PID %d" % pid)
-        subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                       capture_output=True)
+    if pids:
+        log("promote: останавливаю боевой PID %s" %
+            ", ".join(str(p) for p in pids))
+        for pid in pids:
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                           capture_output=True)
         time.sleep(2.0)
     # старт detached: переживает и консоль ci, и консоль запустившего
     cmd = ("cd /d %s && %s -X utf8 server.py --port 8080 --sim "
