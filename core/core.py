@@ -1074,6 +1074,7 @@ class Core:
         for fragment in self.events.run("page.head", course=course, lesson=lesson):
             if fragment:
                 extra_head += fragment
+        extra_head += self.LIVE_JS
         if not staff:
             extra_head += self.INACTIVITY_JS
         return (
@@ -1159,6 +1160,59 @@ class Core:
         return ordered
 
     
+    # JS живых обновлений: страницы сами перезагружаются, когда данные
+    # меняются (студент сдал, преподаватель поставил вердикт и т.п.).
+    # Если на странице есть несохранённый ввод — вместо перезагрузки
+    # показывается плашка «Есть обновления».
+    LIVE_JS = '''<script>
+(function(){
+  var p=location.pathname;
+  if(p==='/board'||p.indexOf('/board/')===0||
+     p==='/plan'||p.indexOf('/plan/')===0)return;
+  var cur=-1,dirty=false,badge=null;
+  function get(){
+    try{return fetch('/api/rev',{cache:'no-store'})
+      .then(function(r){return r.json();});}
+    catch(e){return Promise.resolve({});}
+  }
+  get().then(function(j){
+    if(typeof j.rev!=='number')return;
+    cur=j.rev;
+    setInterval(check,5000);
+  }).catch(function(){});
+  function check(){
+    get().then(function(j){
+      if(typeof j.rev!=='number'||j.rev===cur)return;
+      cur=j.rev;
+      if(dirty)show();else location.reload();
+    }).catch(function(){});
+  }
+  function dirtyWatch(e){
+    var t=e.target;if(!t||!t.tagName)return;
+    var tag=t.tagName.toLowerCase();
+    if(tag==='textarea'||tag==='select')dirty=true;
+    else if(tag==='input'){
+      var ty=(t.type||'text').toLowerCase();
+      if(ty!=='checkbox'&&ty!=='radio'&&ty!=='button'&&
+         ty!=='submit'&&ty!=='reset')dirty=true;
+    }
+  }
+  document.addEventListener('input',dirtyWatch,true);
+  document.addEventListener('change',dirtyWatch,true);
+  function show(){
+    if(badge)return;
+    badge=document.createElement('div');
+    badge.style.cssText='position:fixed;right:18px;bottom:18px;z-index:9998;'
+      +'background:#1f4e8a;color:#fff;border-radius:999px;padding:10px 16px;'
+      +'font-size:14px;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.25)';
+    badge.textContent='🔄 Есть обновления — показать';
+    badge.title='Данные изменились. Нажмите, чтобы обновить страницу.';
+    badge.addEventListener('click',function(){location.reload();});
+    document.body.appendChild(badge);
+  }
+})();
+</script>'''
+
     # JS неактивности студента: предупреждение на 9 мин, выход на 10 мин
     INACTIVITY_JS = '''<script>
     var _iaL=Date.now();

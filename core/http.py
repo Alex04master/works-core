@@ -1390,6 +1390,14 @@ class WorksServer(http.server.ThreadingHTTPServer):
             handler._send_json(200, {"ok": True})
             return _SENT
 
+        # Живые обновления: номер ревизии данных. Страницы опрашивают
+        # его раз в 5 с и сами перезагружаются при изменении
+        # (студент сдал, преподаватель поставил вердикт и т.п.).
+        @r.add("GET", "/api/rev")
+        def rev_get(handler, params):
+            handler._send_json(200, {"rev": handler._core.store.rev})
+            return _SENT
+
         # ── Страница «Моя сдача»: статус отчёта для студента ────────────
         @r.add("GET", "/mysub/", access="student")
         def my_sub(handler, params):

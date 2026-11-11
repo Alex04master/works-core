@@ -20,6 +20,8 @@ class Store:
             os.makedirs(d, exist_ok=True)
         self.lock = threading.Lock()
         self.db = self._load()
+        # счётчик изменений для живых обновлений страниц (/api/rev)
+        self.rev = 0
 
     def _blank(self):
         return {"версия": 3, "курсы": [], "занятия": [], "задания": [],
@@ -51,6 +53,7 @@ class Store:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self.db, f, ensure_ascii=False, indent=1)
             os.replace(tmp, self.reg)
+            self.rev += 1
 
     def __getitem__(self, key):
         return self.db[key]
