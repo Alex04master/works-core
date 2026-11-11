@@ -31,35 +31,71 @@ class Upload:
 
 DRAFT_JS = """<script>
 (function(){
-  var U='__SID__';
+  var U='__SID__',T='__TID__';
   var K='draft_'+U+location.pathname;
-  if(/[?&]ok=1/.test(location.search)){try{localStorage.removeItem(K)}catch(e){}return}
+  if(/[?&]ok=1/.test(location.search)){
+    try{localStorage.removeItem(K)}catch(e){}
+    fetch('/api/draft?task='+encodeURIComponent(T)+'&clear=1');
+    return}
   var f=document.querySelector('form.task-form');if(!f)return;
-  // Черновик localStorage главнее серверного предзаполнения (wc_prefill):
-  // при ошибке валидации (?error=) или F5 нез-saving правки не теряются.
   try{
     var d=JSON.parse(localStorage.getItem(K)||'{}');
+    apply(d);
+  }catch(e){}
+  function apply(d){
     for(var i=0;i<f.elements.length;i++){var el=f.elements[i];
       if(!el.name||el.type=='file'||el.type=='submit')continue;
       if(el.type=='radio'||el.type=='checkbox'){
         var v=d[el.name];
-        if(v===undefined)continue; // в черновике нет — не трогаем
+        if(v===undefined)continue;
         el.checked=Array.isArray(v)?v.indexOf(el.value)>=0:v===el.value;
       }else if(d[el.name]!==undefined){el.value=d[el.name];}
     }
-  }catch(e){}
-  function save(){
-    try{
-      var d={};new FormData(f).forEach(function(v,k){
-        if(k=='task'||k=='wc_prefill'||typeof v!='string')return;
-        if(d[k]===undefined)d[k]=v;
-        else if(Array.isArray(d[k]))d[k].push(v);
-        else d[k]=[d[k],v];
-      });
-      localStorage.setItem(K,JSON.stringify(d));
-    }catch(e){}
   }
-  f.addEventListener('input',save);f.addEventListener('change',save);
+  function collect(){
+    var d={};new FormData(f).forEach(function(v,k){
+      if(k=='task'||k=='wc_prefill'||typeof v!='string')return;
+      if(d[k]===undefined)d[k]=v;
+      else if(Array.isArray(d[k]))d[k].push(v);
+      else d[k]=[d[k],v];
+    });
+    return d;}
+  function saveLocal(){
+    try{localStorage.setItem(K,JSON.stringify(collect()));}catch(e){}}
+  function saveServer(){
+    try{fetch('/api/draft',{method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:'task='+encodeURIComponent(T)+'&draft='
+        +encodeURIComponent(JSON.stringify(collect()))});}catch(e){}}
+  var dirty=false;
+  f.addEventListener('input',function(){dirty=true;saveLocal();});
+  f.addEventListener('change',function(){dirty=true;saveLocal();});
+  var db=document.createElement('button');
+  db.type='button';db.id='wc-draft-btn';
+  db.className='btn btn-secondary';db.textContent='💾 Сохранить черновик';
+  db.style.marginRight='8px';
+  db.addEventListener('click',function(){
+    saveLocal();saveServer();dirty=false;
+    db.textContent='✓ Черновик сохранён';
+    setTimeout(function(){db.textContent='💾 Сохранить черновик';},2000);});
+  var sb=f.querySelector('button:not([type="button"])');
+  if(sb)sb.parentNode.insertBefore(db,sb);
+  else f.appendChild(db);
+  window.addEventListener('beforeunload',saveLocal);
+  document.addEventListener('visibilitychange',function(){
+    if(document.hidden&&dirty){saveLocal();saveServer();dirty=false;}});
+  setInterval(function(){
+    if(dirty){saveLocal();saveServer();dirty=false;}},60000);
+  if(!localStorage.getItem(K)){
+    fetch('/api/draft?task='+encodeURIComponent(T))
+      .then(function(r){return r.json();})
+      .then(function(j){
+        if(j.ok&&j.data&&Object.keys(j.data).length){
+          apply(j.data);
+          var sb2=document.getElementById('wc-draft-btn');
+          if(sb2)sb2.textContent='✓ Черновик восстановлен';
+        }});
+  }
 })();
 </script>"""
 
@@ -1233,7 +1269,7 @@ class WorksServer(http.server.ThreadingHTTPServer):
                     ' enctype="multipart/form-data" class="task-form">'
                     '<input type="hidden" name="task" value="%s">%s%s%s'
                     "<p><button>Отправить</button></p></form>"
-                    + DRAFT_JS.replace("__SID__", _e(sid))) % (
+                    + DRAFT_JS.replace("__SID__", _e(sid)).replace("__TID__", _e(tid))) % (
                 _e(lesson["id"] if lesson else ""),
                 _e(lesson["title"] if lesson else ""),
                 _err_html,
@@ -1293,6 +1329,67 @@ class WorksServer(http.server.ThreadingHTTPServer):
             return _SENT
 
         
+        # ── Черновик формы задания ──────────────────────────────────
+        @r.add("GET", "/api/draft")
+        def draft_get(handler, params):
+            sid = handler._student()
+            if not sid:
+                handler._send_json(403, {"error": "not authorised"})
+                return _SENT
+            qs = urllib.parse.parse_qs(
+                urllib.parse.urlparse(handler.path).query)
+            tid = (qs.get("task") or [""])[0]
+            if (qs.get("clear") or [""])[0] == "1":
+                p = os.path.join(handler._core.store.root, "черновики",
+                                 "%s__%s.json" % (tid, sid))
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+                handler._send_json(200, {"ok": True})
+                return _SENT
+            if not tid:
+                handler._send_json(400, {"error": "task required"})
+                return _SENT
+            p = os.path.join(handler._core.store.root, "черновики",
+                             "%s__%s.json" % (tid, sid))
+            if not os.path.isfile(p):
+                handler._send_json(200, {"ok": True, "data": None})
+                return _SENT
+            try:
+                with open(p, encoding="utf-8") as f:
+                    d = json.load(f)
+                handler._send_json(200, {"ok": True, "data": d.get("data"),
+                                         "когда": d.get("когда", 0)})
+            except Exception:
+                handler._send_json(200, {"ok": True, "data": None})
+            return _SENT
+
+        @r.add("POST", "/api/draft")
+        def draft_post(handler, params):
+            sid = handler._student()
+            if not sid:
+                handler._send_json(403, {"error": "not authorised"})
+                return _SENT
+            data = handler._parse_post()
+            tid = data.get("task", "")
+            try:
+                draft = json.loads(data.get("draft") or "{}")
+            except Exception:
+                handler._send_json(400, {"error": "bad draft"})
+                return _SENT
+            if not tid:
+                handler._send_json(400, {"error": "task required"})
+                return _SENT
+            d = os.path.join(handler._core.store.root, "черновики")
+            os.makedirs(d, exist_ok=True)
+            p = os.path.join(d, "%s__%s.json" % (tid, sid))
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump({"data": draft, "когда": time.time()}, f,
+                          ensure_ascii=False)
+            handler._send_json(200, {"ok": True})
+            return _SENT
+
         # ── Страница «Моя сдача»: статус отчёта для студента ────────────
         @r.add("GET", "/mysub/", access="student")
         def my_sub(handler, params):
