@@ -226,8 +226,8 @@ def register(ctx):
         student_table = ""
         if students:
             student_table = st_hint + (
-                '<details class="stu-list" open>'
-                '<summary>📋 Студенты (%d) — нажмите, чтобы сверить'
+                '<details class="stu-list">'
+                '<summary>📋 Студенты (%d) — нажмите, чтобы развернуть'
                 '</summary>'
                 '<p style="margin:10px 0">'
                 '<input type="text" class="stu-filter" data-tb="tb_students" '
@@ -270,11 +270,25 @@ def register(ctx):
                     _e(cid), _e(s["id"]),
                     "off" if in_course else "on",
                     "Отчислить" if in_course else "Зачислить")
+        grp_list = sorted({(s.get("group", "") or "").strip()
+                           for s in students_all} - {""})
+        grp_form = ""
+        if grp_list:
+            opts = "".join('<option value="%s">%s</option>'
+                           % (_e(g), _e(g)) for g in grp_list)
+            grp_form = (
+                '<form method="post" action="/staff/enroll_group" '
+                'style="display:inline-flex;gap:8px;align-items:center;'
+                'margin:6px 0 0">'
+                '<input type="hidden" name="course" value="%s">'
+                '<select name="group">%s</select>'
+                '<button class="btn-sm">＋ Зачислить группу</button></form>'
+                % (_e(cid), opts))
         enroll_card = (
             '<div class="staff-card"><h2>Зачисление</h2>'
             '<p class="hint">Зачислено: %d из %d. Если никого не зачислять '
             'и не задать группы — курс открыт всем.</p>'
-            '<details open><summary>Список зачисления (%d)</summary>'
+            '<details><summary>Список зачисления (%d)</summary>'
             '<p style="margin:10px 0">'
             '<input type="text" class="stu-filter" data-tb="tb_enroll" '
             'data-cnt="cnt_enroll" oninput="stuFilt(this)" '
@@ -287,6 +301,7 @@ def register(ctx):
             '<form method="post" action="/staff/enroll_all">'
             '<input type="hidden" name="course" value="%s">'
             '<p><button>Зачислить всех</button></p></form>'
+            + grp_form +
             '</div>') % (len(enrolled), len(students_all),
                          len(students_all),
                          enroll_rows, _e(cid))
@@ -297,7 +312,9 @@ def register(ctx):
             '<div class="staff-grid">'
             '<div class="staff-card">'
             '<h2>Занятия</h2>'
-            + (lesson_table or '<p class="hint">Нет занятий.</p>') +
+            + (('<details><summary>📋 Занятия (%d)</summary>'
+                % len(lessons)) + lesson_table + '</details>'
+               if lessons else '<p class="hint">Нет занятий.</p>') +
             '<details><summary>Создать занятие</summary>'
             '<form method="post" action="/staff/new_lesson">'
             '<input type="hidden" name="course" value="%s">'
@@ -1351,6 +1368,33 @@ def register(ctx):
                 ctx.enroll(cid, s["id"])
             ctx.audit("зачислены все студенты", {"курс": cid},
                       handler=handler)
+        handler._redirect("/staff/course/%s" % _e(cid))
+        return handler._SENT
+
+    @ctx.add_route("POST", "/staff/enroll_group", access="staff")
+    def enroll_group(handler, params):
+        """Зачислить на курс всех студентов выбранной группы."""
+        data = handler._parse_post()
+        cid = data.get("course", "")
+        grp = str(data.get("group") or "").strip()
+        course = ctx.get_course(cid)
+        if not course or not grp:
+            handler._redirect("/staff")
+            return handler._SENT
+        enrolled = set(course.get("студенты") or [])
+        added = 0
+        for s in ctx.list_students():
+            sid = s.get("id", "")
+            if (s.get("group", "") or "").strip() != grp:
+                continue
+            if sid in enrolled:
+                continue
+            ctx.enroll(cid, sid)
+            enrolled.add(sid)
+            added += 1
+        ctx.audit("зачислена группа",
+                  {"курс": cid, "группа": grp, "зачислено": added},
+                  handler=handler)
         handler._redirect("/staff/course/%s" % _e(cid))
         return handler._SENT
 
