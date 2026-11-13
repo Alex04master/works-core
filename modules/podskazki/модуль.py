@@ -47,7 +47,7 @@ MAX_ZIP_FILES = 300                # файлов в одном архиве
 MAX_ZIP_UNPACK = 300 * 1024 * 1024  # суммарно распаковано за архив
 # версия извлечения текста: сменилась — «⚡ Только новое» само сделает
 # полную переобработку (иначе старые чанки без таблиц/картинок остались бы)
-ИЗВ_ВЕРСИЯ = "2"
+ИЗВ_ВЕРСИЯ = "3"
 
 # Страница просмотра документации (клик по «📄 файл» в шторке)
 _VIEW_CSS = (
@@ -68,6 +68,107 @@ _VIEW_CSS = (
     '.wc-nopic{background:#fff3d6;border-radius:4px;padding:1px 6px;'
     'color:#8a6d1a}'
     '</style>')
+
+# ── просмотрщик PDF (pdf.js из статики, работает офлайн): открывает
+# оригинальный файл, прыгает на страницу фрагмента и подсвечивает его
+_PDF_HTML = (
+    '<style>'
+    '.pdfbar{position:sticky;top:0;background:#fff;'
+    'border-bottom:1px solid #e0e0e0;padding:8px 10px;display:flex;'
+    'gap:8px;align-items:center;z-index:5;flex-wrap:wrap}'
+    '.pdfbar button{border:1px solid #c9d2d8;background:#f5f7f8;'
+    'border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit}'
+    '.pdfbar input{padding:4px 6px;border:1px solid #c9d2d8;'
+    'border-radius:6px;width:5.5em;font:inherit}'
+    '#pdfwrap{position:relative;overflow:auto;background:#525659;'
+    'height:calc(100vh - 60px);text-align:center}'
+    '#pdfbox{position:relative;display:inline-block;margin:8px auto}'
+    '#pdfbox>canvas{display:block;box-shadow:0 2px 10px rgba(0,0,0,.4)}'
+    '.pdf-ov{pointer-events:none;position:absolute;left:0;top:0}'
+    '</style>'
+    '<div class="pdfbar">'
+    '<button id="pf-prev">◀</button>'
+    '<span>стр. <input id="pf-page" type="number" min="1" value="1">'
+    ' из <span id="pf-cnt">…</span></span>'
+    '<button id="pf-next">▶</button>'
+    '<button id="pf-zoom-out">−</button>'
+    '<button id="pf-zoom-in">+</button>'
+    '<span id="pf-hint" class="hint"></span>'
+    '</div>'
+    '<div id="pdfwrap"><div id="pdfbox">'
+    '<canvas id="pdfcv"></canvas></div></div>'
+    '<script src="/_static/pdfjs/pdf.min.js"></script>'
+    '<script>(function(){'
+    'var CFG=__CFG__,W=document.getElementById("pdfwrap"),'
+    'box=document.getElementById("pdfbox"),'
+    'cv=document.getElementById("pdfcv"),'
+    'hint=document.getElementById("pf-hint"),'
+    'doc=null,cur=CFG.стр||1,zoom=0;'
+    'pdfjsLib.GlobalWorkerOptions.workerSrc='
+    '"/_static/pdfjs/pdf.worker.min.js";'
+    'function norm(s){return String(s||"").toLowerCase()'
+    '.replace(/\\s+/g," ").trim()}'
+    'function say(t){hint.textContent=t}'
+    'function render(n){'
+    'if(n<1||n>doc.numPages)return;'
+    'doc.getPage(n).then(function(page){'
+    'cur=n;document.getElementById("pf-page").value=n;'
+    'var v0=page.getViewport({scale:1});'
+    'var s=Math.max(.4,Math.min(2.5,'
+    '(W.clientWidth-14)/v0.width))+zoom;'
+    'var vp=page.getViewport({scale:s});'
+    'cv.width=vp.width;cv.height=vp.height;'
+    'page.render({canvasContext:cv.getContext("2d"),viewport:vp});'
+    'if(n===(CFG.стр||1))highlight(page,vp);'
+    '})}'
+    'function highlight(page,vp){'
+    'var q=norm(CFG.запрос);'
+    'if(!q){say("");return}'
+    'page.getTextContent().then(function(tc){'
+    'var items=tc.items,all=[],total="",i,t;'
+    'for(i=0;i<items.length;i++){'
+    't=norm(items[i].str);if(!t)continue;'
+    'all.push({it:items[i],a:total.length,b:total.length+t.length});'
+    'total+=(total?" ":"")+t}'
+    'var L=Math.min(q.length,160),p=-1;'
+    'while(L>=20&&p<0){p=total.indexOf(q.slice(0,L));'
+    'if(p<0)L=Math.floor(L/2)}'
+    'if(p<0){say("фрагмент не найден — открыта страница "'
+    '+(CFG.стр||1));return}'
+    'var a=p,b=p+L,ov=document.createElement("canvas");'
+    'ov.width=cv.width;ov.height=cv.height;'
+    'ov.className="pdf-ov";'
+    'var g=ov.getContext("2d");'
+    'g.fillStyle="rgba(255,214,0,.45)";'
+    'var first=null;'
+    'for(i=0;i<all.length;i++){'
+    'if(all[i].b>a&&all[i].a<b){'
+    'var tx=pdfjsLib.Util.transform(vp.transform,'
+    'all[i].it.transform);'
+    'var h=Math.hypot(tx[2],tx[3]),'
+    'w=(all[i].it.width||0)*vp.scale;'
+    'g.fillRect(tx[4],tx[5]-h,w,h*1.25);'
+    'if(first===null||tx[5]-h<first)first=tx[5]-h}}'
+    'box.appendChild(ov);'
+    'if(first!==null)W.scrollTop=Math.max(0,first-80);'
+    'say("использованный фрагмент подсвечен")})}'
+    'document.getElementById("pf-prev").onclick=function(){'
+    'render(cur-1)};'
+    'document.getElementById("pf-next").onclick=function(){'
+    'render(cur+1)};'
+    'var pi=document.getElementById("pf-page");'
+    'pi.onchange=function(){render(parseInt(pi.value,10)||1)};'
+    'document.getElementById("pf-zoom-out").onclick=function(){'
+    'zoom-=0.15;render(cur)};'
+    'document.getElementById("pf-zoom-in").onclick=function(){'
+    'zoom+=0.15;render(cur)};'
+    'pdfjsLib.getDocument("/podskazki/файл/"'
+    '+encodeURIComponent(CFG.файл)).promise.then(function(d){'
+    'doc=d;document.getElementById("pf-cnt").textContent=d.numPages;'
+    'if(cur>d.numPages)cur=d.numPages;render(cur)},'
+    'function(e){say("не удалось открыть PDF: "+e)});'
+    '})();</script>'
+)
 TXT_EXT = (".txt", ".md", ".markdown", ".log", "")
 GOOD_EXT = (".txt", ".md", ".markdown", ".log", ".docx", ".pdf")
 BATCH = 16  # текстов на один вызов эмбеддера
@@ -303,10 +404,7 @@ def register(ctx):
                 reader = PdfReader(path)
                 parts = []
                 for i, p in enumerate(reader.pages, 1):
-                    try:  # layout сохраняет колонки и таблицы
-                        t = p.extract_text(extraction_mode="layout") or ""
-                    except Exception:
-                        t = p.extract_text() or ""
+                    t = p.extract_text() or ""
                     n_img = 0
                     try:
                         xo = (p.get("/Resources") or {}).get("/XObject")
@@ -370,7 +468,8 @@ def register(ctx):
         old_chunks = {}
         for c in old.get("чанки", []):
             old_chunks.setdefault(c.get("ф"), []).append(
-                (c.get("т", ""), c.get("в"), c.get("н") or 1.0))
+                (c.get("т", ""), c.get("в"), c.get("н") or 1.0,
+                 c.get("стр")))
         old_mt = old.get("файлы", {})
         if not isinstance(old_mt, dict):
             old_mt = {}
@@ -379,7 +478,7 @@ def register(ctx):
         report = {"время": datetime.now().isoformat(timespec="seconds"),
                   "файлов": len(files), "чанков": 0, "обновлено": [],
                   "без_изменений": 0, "предупреждения": [], "ошибка": ""}
-        raw = []    # (файл, текст чанка) — требуют эмбеддинга
+        raw = []    # (файл, текст чанка, страница) — требуют эмбеддинга
         chunks = [] # готовые чанки (переиспользованные + новые)
         changed = []
         for n, fn in enumerate(files, 1):
@@ -393,10 +492,10 @@ def register(ctx):
                      and fn in old_chunks
                      and mt is not None and old_mt.get(fn) == mt)
             if reuse:
-                for txt, vec, nrm in old_chunks[fn]:
+                for txt, vec, nrm, pg in old_chunks[fn]:
                     if vec is not None:
                         chunks.append({"ф": fn, "т": txt, "в": vec,
-                                       "н": nrm})
+                                       "н": nrm, "стр": pg})
                 report["без_изменений"] += 1
                 continue
             changed.append(fn)
@@ -407,8 +506,30 @@ def register(ctx):
             if not (text or "").strip():
                 report["предупреждения"].append("%s: пустой" % fn)
                 continue
+            page_texts = None
+            if fn.lower().endswith(".pdf"):
+                # страницы из маркеров извлечения: чанк -> страница
+                page_texts = [
+                    re.sub(r"\s+", " ", p).lower().strip()
+                    for p in re.split(
+                        r"\n?\[Страница \d+\](?: \[Рисунков: \d+\])?\n?",
+                        text)]
             for ch in _chunks(text):
-                raw.append((fn, ch))
+                pg = None
+                if page_texts:
+                    low = re.sub(r"\[Страница \d+\](?: \[Рисунков: \d+\])?",
+                                 " ", ch)
+                    low = re.sub(r"\[Рисунков: \d+\]", " ", low)
+                    low = re.sub(r"\s+", " ", low).lower().strip()
+
+                    def _find(sub):
+                        return next((i for i, p in enumerate(page_texts)
+                                     if i and p and sub in p), None)
+
+                    pg = _find(low)
+                    if pg is None and len(low) > 200:
+                        pg = _find(low[-200:]) or _find(low[:200])
+                raw.append((fn, ch, pg))
         if not raw and not chunks:
             report["ошибка"] = ("нечего индексировать — загрузите "
                                 "документацию на странице источников")
@@ -421,7 +542,8 @@ def register(ctx):
             vecs = []
             try:
                 for i in range(0, len(raw), BATCH):
-                    vecs.extend(_embed(st, [t for _, t in raw[i:i + BATCH]]))
+                    vecs.extend(_embed(st, [r[1] for r in
+                                            raw[i:i + BATCH]]))
                     _prog.update({"сделано": min(i + BATCH, len(raw))})
             except Exception as ex:
                 report["ошибка"] = "эмбеддер: %s" % ex
@@ -434,9 +556,10 @@ def register(ctx):
                 _prog.update({"фаза": "ошибка", "ошибка": report["ошибка"]})
                 _kv_save("пересборка.json", report)
                 return
-            for (fn, txt), v in zip(raw, vecs):
+            for (fn, txt, pg), v in zip(raw, vecs):
                 n = math.sqrt(sum(x * x for x in v)) or 1.0
-                chunks.append({"ф": fn, "т": txt, "в": v, "н": round(n, 6)})
+                chunks.append({"ф": fn, "т": txt, "в": v, "н": round(n, 6),
+                               "стр": pg})
         else:
             # эмбеддить нечего (например, догрузка без изменений):
             # индекс и кэш не трогаем вовсе
@@ -708,7 +831,8 @@ def register(ctx):
             seen.add(c["ф"])
             frags.append({"ф": c["ф"],
                           "х": hashlib.sha1(
-                              c["т"].encode("utf-8")).hexdigest()[:8]})
+                              c["т"].encode("utf-8")).hexdigest()[:8],
+                          "стр": c.get("стр")})
         with _lock:
             cache = _cache()
             cache[key] = {"ответ": answer, "источники": sources,
@@ -1216,6 +1340,30 @@ def register(ctx):
         if not fname or fname in ("..", ".") or not os.path.isfile(path):
             handler._send_text(404, "Not Found")
             return handler._SENT
+        if fname.lower().endswith(".pdf"):
+            # настоящий PDF: вьювер на pdf.js — страница фрагмента
+            # и подсветка использованного текста
+            idx = _load_index() or {}
+            hit = None
+            for c in idx.get("чанки", []):
+                if c.get("ф") == fname and hashlib.sha1(
+                        c.get("т", "").encode("utf-8")
+                ).hexdigest()[:8] == target:
+                    hit = c
+                    break
+            cfg = {"файл": fname, "хэш": target,
+                   "стр": (hit or {}).get("стр") or 1,
+                   "запрос": re.sub(
+                       r"\s+", " ",
+                       re.sub(r"\[Рисунков: \d+\]", " ",
+                              re.sub(r"\[Страница \d+\]"
+                                     r"(?: \[Рисунков: \d+\])?", " ",
+                                     (hit or {}).get("т", "")))).strip()[:300]}
+            handler._send_html(ctx.render_page(
+                "Документация: " + fname,
+                _PDF_HTML.replace("__CFG__",
+                                  json.dumps(cfg, ensure_ascii=False))))
+            return handler._SENT
         idx = _load_index() or {}
         blocks = [c for c in idx.get("чанки", []) if c.get("ф") == fname]
         if blocks:
@@ -1277,6 +1425,30 @@ def register(ctx):
                 ".tif": "image/tiff", ".tiff": "image/tiff"}.get(
             os.path.splitext(fn)[1].lower())
         if (not doc or not fn or mime is None
+                or not os.path.isfile(p)
+                or os.path.commonpath([p, root]) != root):
+            handler._send_text(404, "Not Found")
+            return handler._SENT
+        with open(p, "rb") as f:
+            handler._send_response(200, mime, f.read(), encode=False)
+        return handler._SENT
+
+    # ── оригинал файла источника (для pdf-просмотрщика) ──────────────
+    @ctx.add_route("GET", "/podskazki/файл/", access="any")
+    def source_file(handler, params):
+        parts = params.get("_parts", [])
+        fname = os.path.basename(parts[0]) if parts else ""
+        root = os.path.abspath(os.path.join(ctx.data_dir, "источники"))
+        p = os.path.abspath(os.path.join(root, fname))
+        mime = {".pdf": "application/pdf",
+                ".txt": "text/plain; charset=utf-8",
+                ".md": "text/plain; charset=utf-8",
+                ".markdown": "text/plain; charset=utf-8",
+                ".log": "text/plain; charset=utf-8",
+                ".docx": "application/vnd.openxmlformats-officedocument"
+                         ".wordprocessingml.document"}.get(
+            os.path.splitext(fname)[1].lower())
+        if (not fname or fname in ("..", ".") or mime is None
                 or not os.path.isfile(p)
                 or os.path.commonpath([p, root]) != root):
             handler._send_text(404, "Not Found")

@@ -741,6 +741,65 @@ try:
          and "стенд_таблицы.docx" in (j13.get("источники") or []),
          "docx с таблицей участвует в поиске", body[:200])
 
+    # ── pdf: настоящий PDF, страница фрагмента, подсветка ────────────
+    _pdf = (
+        b"%PDF-1.4\n"
+        b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+        b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]"
+        b"/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n"
+        b"4 0 obj<</Length 210>>stream\n"
+        b"BT /F1 14 Tf 60 720 Td (Parameter: tok potrebleniya pribora) "
+        b"Tj 0 -20 Td (v dezhurnom rezhime sostavlyaet 60 mA. "
+        b"Rezervnyy) Tj 0 -20 Td (akkumulyator 12 V 7 Ah obespechivaet "
+        b"24 chasa raboty.) Tj ET\nendstream\nendobj\n"
+        b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
+        b"trailer<</Root 1 0 R/Size 6>>\nstartxref\n0\n%%EOF\n")
+    code, h, body = mp_post("/podskazki/загрузка", {},
+                            {"файлы": ("стенд_паспорт.pdf", _pdf)}, jar=jar)
+    form_post("/podskazki/догрузить", {}, jar=jar)
+    for _ in range(60):
+        code, h, body = get("/podskazki/прогресс", jar=jar)
+        prog = json.loads(body)
+        if prog.get("фаза") in ("готово", "ошибка"):
+            break
+        time.sleep(0.5)
+    need(prog.get("фаза") == "готово", "догрузка pdf завершилась", str(prog))
+    idx = json.load(io.open(os.path.join(cfg_dir, "индекс.json"),
+                            encoding="utf-8"))
+    ch = next(c for c in idx["чанки"] if c["ф"] == "стенд_паспорт.pdf")
+    need(ch.get("стр") == 1,
+         "pdf: страница чанка определена из маркеров", str(ch)[:150])
+    hx = hashlib.sha1(ch["т"].encode("utf-8")).hexdigest()[:8]
+    code, h, body = get("/podskazki/просмотр/стенд_паспорт.pdf/" + hx,
+                        jar=jar_s)
+    need(code == 200 and "pdf.min.js" in body and '"стр": 1' in body,
+         "pdf: вьювер на pdf.js с целевой страницей", body[:200])
+    need("Parameter: tok potrebleniya" in body,
+         "pdf: текст фрагмента передан для подсветки")
+    need("/_static/pdfjs/pdf.worker.min.js" in body,
+         "pdf: воркер подключён")
+    code, h, body = get("/podskazki/файл/стенд_паспорт.pdf", jar=jar_s)
+    need(code == 200 and body.startswith("%PDF"),
+         "оригинальный pdf отдаётся по /podskazki/файл/")
+    code, h, body = get("/_static/pdfjs/pdf.min.js")
+    need(code == 200 and len(body) > 100000, "pdf.js в статике")
+    code, h, body = get("/podskazki/файл/../../реестр.json", jar=jar_s)
+    need(code == 404, "файл-маршрут: выход за папку запрещён")
+    code, h, body = json_post(
+        "/podskazka",
+        {"вопрос": "tok potrebleniya pribora dezhurnom rezhime"},
+        jar=jar_s)
+    j14 = json.loads(body)
+    need(j14.get("ок")
+         and "стенд_паспорт.pdf" in (j14.get("источники") or []),
+         "pdf участвует в поиске", body[:200])
+    fr14 = (j14.get("фрагменты") or [])
+    pdf_fr = next((f for f in fr14 if f.get("ф") == "стенд_паспорт.pdf"),
+                  {})
+    need(pdf_fr.get("стр") == 1, "фрагменты несут номер страницы",
+         str(fr14)[:200])
+
     # удаление источника
     code, h, body = form_post("/podskazki/удалить",
                               {"имя": "руководство.md"}, jar=jar)
