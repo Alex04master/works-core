@@ -15,6 +15,8 @@ dist/
 _temp/
 tests/_tmp_*/
 tests/_browsertest/
+.code-index/
+mcp-code-index/
 
 # OS
 Thumbs.db
