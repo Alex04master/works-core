@@ -251,9 +251,9 @@ class ModuleContext:
 
     # ── Сдача ────────────────────────────────────────────────────────
     def submit(self, task_id, student_id, answers=None, files=None, note="",
-               brigade=""):
+               brigade="", names=""):
         return self._core.collect(task_id, student_id, answers, files, note,
-                                  brigade=brigade)
+                                  brigade=brigade, names=names)
 
     def set_verdict(self, task_id, student_id, verdict, score=None, comment="",
                     check=None):
@@ -328,6 +328,7 @@ def load_modules(core, mods_dir):
 
         info["id"] = str(man.get("id") or name)
         info["name"] = str(man.get("name") or info["id"])
+        info["reload"] = str(man.get("reload") or "").strip().lower()
 
         # Проверка: выключен ли модуль через панель /_modules
         if not core.is_module_enabled(info["id"]):
@@ -435,6 +436,7 @@ def reload_module(core, mods_dir, mod_id):
     mid = str(man.get("id") or mod_id)
     info["id"] = mid
     info["name"] = str(man.get("name") or mid)
+    info["reload"] = str(man.get("reload") or "").strip().lower()
 
     if not core.is_module_enabled(mid) or not man.get("enabled", True):
         detach(mid)

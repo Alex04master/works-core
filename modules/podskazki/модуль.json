@@ -1,5 +1,6 @@
 {
   "id": "podskazki",
   "name": "🤖 Подсказки",
-  "api": 1
+  "api": 1,
+  "reload": "restart"
 }

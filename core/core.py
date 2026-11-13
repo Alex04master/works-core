@@ -41,6 +41,21 @@ def _is_upload(v):
     return hasattr(v, "data") and hasattr(v, "name")
 
 
+def _clean_names(raw):
+    """Список имён участников из строки («Иванов И.И., Петров П.П.»):
+    разделители — запятая, точка с запятой, перевод строки; пустые и
+    повторы отбрасываются, максимум 40 имён."""
+    out, seen = [], set()
+    for part in re.split(r"[,;\n]+", str(raw or "")):
+        n = part.strip()[:120]
+        if n and n.lower() not in seen:
+            seen.add(n.lower())
+            out.append(n)
+        if len(out) >= 40:
+            break
+    return out
+
+
 def _safe_name(name):
     """Безопасное имя файла для сохранения на диск."""
     base = os.path.basename(str(name or "").replace("\\", "/")).strip()
@@ -502,7 +517,7 @@ class Core:
         }
 
     def collect(self, task_id, student_id, answers=None, files=None, note="",
-                brigade=""):
+                brigade="", names=""):
         """Принять сдачу работы.
 
         Возвращает (запись_сдачи, ошибка).
@@ -609,6 +624,9 @@ class Core:
             "note": note,
             "verdict": None, "score": None, "comment": "",
         }
+        _names = _clean_names(names)
+        if _names:
+            ver["участники_имена"] = _names
         dl = task_deadline(task)
         if dl and datetime.now() > dl:
             ver["просрочено"] = True
@@ -1135,6 +1153,18 @@ class Core:
     def is_module_enabled(self, mod_id):
         enabled = self._module_states.get("enabled", {})
         return enabled.get(mod_id, True)
+
+    def get_reload_level(self, mod_id):
+        """Режим применения тумблера модуля на /_modules.
+
+        Задаёт сам модуль ключом reload манифеста (это диктуют
+        его возможности): hot — применяется сразу; lazy — по кнопке
+        «Применить изменения»; restart — только после перезапуска
+        сервера. Без ключа — «плавный»."""
+        info = next((m for m in self.modules if m.get("id") == mod_id),
+                    None)
+        v = (info or {}).get("reload")
+        return v if v in ("hot", "lazy", "restart") else "lazy"
 
     def get_module_order(self):
         """Порядок модулей. Если не задан — порядок загрузки."""

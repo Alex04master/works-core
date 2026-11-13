@@ -1,5 +1,6 @@
 {
   "id": "schemacheck",
   "name": "🔍 Проверка схемы",
-  "api": 1
+  "api": 1,
+  "reload": "lazy"
 }

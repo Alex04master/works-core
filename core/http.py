@@ -718,6 +718,12 @@ class WorksServer(http.server.ThreadingHTTPServer):
                 .then(r => r.json())
                 .then(d => { if(d.ok) location.reload(); });
             }
+            function applyAll() {
+              fetch('/_modules/apply', {method:'POST'})
+                .then(function(r){ return r.json(); })
+                .then(function(){ location.reload(); });
+            }
+            }
             function saveOrder() {
               var rows = Array.from(document.querySelectorAll('.mod-row'));
               var order = rows.map(function(r) { return r.dataset.modId; });
@@ -788,9 +794,12 @@ class WorksServer(http.server.ThreadingHTTPServer):
                 "#order-msg{display:none;position:fixed;bottom:20px;right:20px;"
                 "background:#1a7a2a;color:#fff;padding:8px 16px;border-radius:6px;"
                 "font-size:13px;z-index:99;}"
+                ".mod-lvl{text-align:center;}"
                 "</style>")
 
             rows = ""
+            pending = 0          # модули, ожидающие «Применить изменения»
+            pending_restart = 0  # критические, ждущие перезапуска
             for m in sorted_mods:
                 state = m.get("state", "?")
                 reason = m.get("reason", "")
@@ -801,6 +810,24 @@ class WorksServer(http.server.ThreadingHTTPServer):
                                "отключён": "⚠️", "сбой": "❌",
                                "битый манифест": "💥"}
                 icon = state_icons.get(state, "❓")
+
+                lvl = handler._core.get_reload_level(mod_id)
+                lvl_names = {"hot": "⚡ мгновенный", "lazy": "⏳ плавный",
+                             "restart": "🔒 критический"}
+                badge = '<span class="hint">%s</span>' % (
+                    {"hot": "⚡ мгновенный", "lazy": "⏳ плавный",
+                     "restart": "🔒 критический"}[lvl])
+
+                active = state not in ("выключен", "отключён", "сбой",
+                                       "битый манифест")
+                mismatch = (enabled and not active) or (not enabled and active)
+                apply_html = ""
+                if mismatch and lvl == "restart":
+                    apply_html = '<span class="hint">🔒 после перезапуска</span>'
+                    pending_restart += 1
+                elif mismatch:
+                    apply_html = '<span class="hint">⏳ по кнопке внизу</span>'
+                    pending += 1
 
                 toggle = ""
                 if state == "ok" or state == "выключен":
@@ -816,20 +843,32 @@ class WorksServer(http.server.ThreadingHTTPServer):
                     '<td><span class="drag-handle">⋮</span> %s</td>'
                     '<td><code>%s</code></td>'
                     '<td class="state-%s">%s</td>'
+                    '<td class="mod-lvl">%s</td>'
                     '<td class="mod-toggle">%s</td>'
-                    '<td class="mod-reason">%s</td></tr>') % (
+                    '<td class="mod-reason">%s%s</td></tr>') % (
                         mod_id, icon, m.get("name", m["id"]), mod_id,
-                        state.replace(" ", "-"), state,
-                        toggle, reason_html)
+                        state.replace(" ", "-"), state, badge,
+                        toggle, apply_html, reason_html)
 
+            btn = ('<div class="staff-actions" style="margin-top:10px">'
+                   '<a class="btn" onclick="applyAll()">'
+                   '✅ Применить изменения%s</a>%s</div>'
+                   % ((' (%d)' % pending) if pending else "",
+                      (' <span class="hint">🔒 критические модули применятся '
+                       'только после перезапуска сервера</span>'
+                       if pending_restart else "")))
             body = (
                 dnd_css
                 + '<div id="order-msg">Порядок сохранён</div>'
                 + '<table class="module-table">'
-                  '<tr><th></th><th>Модуль</th><th>ID</th><th>Статус</th><th>Вкл</th><th></th></tr>'
+                  '<tr><th></th><th>Модуль</th><th>ID</th><th>Статус</th><th>Режим</th><th>Вкл</th><th></th></tr>'
                   '%s</table>'
-                  '<p class="hint">Всего: %d. Перетаскивайте строки за ⋮, чтобы изменить порядок. '
-                  'Выключение — после перезапуска.</p>') % (
+                  + btn
+                  + '<p class="hint">Всего: %d. Перетаскивайте строки за ⋮, чтобы изменить порядок. '
+                  'Режим задаёт сам модуль (ключ reload манифеста): '
+                  '⚡ мгновенный — тумблер применяется сразу; ⏳ плавный — '
+                  'кнопкой «Применить изменения» внизу; 🔒 критический — '
+                  'только после перезапуска сервера.</p>') % (
                     rows, len(handler._core.modules))
             return handler._core.page("Модули", body, staff=True, extra_head=dnd_js + dnd_css)
         @r.add("POST", "/_modules/toggle/", access="staff")
@@ -840,8 +879,64 @@ class WorksServer(http.server.ThreadingHTTPServer):
                 handler._send_json(400, {"error": "no module id"})
                 return _SENT
             enabled = handler._core.toggle_module(mod_id)
+            applied, state, err = False, "", ""
+            if handler._core.get_reload_level(mod_id) == "hot":
+                try:
+                    from core.module import reload_module
+                    info = reload_module(handler._core,
+                                         handler._core.mods_dir, mod_id)
+                    applied = True
+                    state = info.get("state", "")
+                except Exception as ex:
+                    err = "%s: %s" % (type(ex).__name__, ex)
+            handler._core.audit(
+                "преподаватель", "переключён модуль (режим: %s)"
+                % handler._core.get_reload_level(mod_id),
+                {"модуль": mod_id, "включен": enabled,
+                 "применено": applied, "ошибка": err},
+                ip=handler.client_address[0])
             handler._send_json(200, {"ok": True, "mod_id": mod_id,
-                                     "enabled": enabled})
+                                     "enabled": enabled, "applied": applied,
+                                     "state": state, "error": err})
+            return _SENT
+
+        @r.add("POST", "/_modules/apply", access="staff")
+        def apply_modules(handler, params):
+            """Применить отложенные состояния модулей (кроме
+            критических — они ждут перезапуска сервера)."""
+            from core.module import reload_module
+            if not handler._core.mods_dir:
+                handler._send_json(400, {"error": "каталог модулей не задан"})
+                return _SENT
+            applied, need_restart = [], []
+            for m in list(handler._core.modules):
+                mid = m.get("id", "")
+                state = m.get("state", "?")
+                active = state not in ("выключен", "отключён", "сбой",
+                                       "битый манифест")
+                enabled = handler._core.is_module_enabled(mid)
+                if (enabled and active) or (not enabled and not active):
+                    continue  # расхождений нет
+                if handler._core.get_reload_level(mid) == "restart":
+                    need_restart.append(mid)
+                    continue
+                try:
+                    info = reload_module(handler._core,
+                                         handler._core.mods_dir, mid)
+                except Exception as ex:
+                    applied.append({"id": mid, "state": "сбой",
+                                    "reason": "%s: %s" % (type(ex).__name__, ex)})
+                    continue
+                applied.append({"id": mid, "state": info.get("state", ""),
+                                "reason": info.get("reason", "")})
+            if applied:
+                handler._core.audit(
+                    "преподаватель", "применены состояния модулей",
+                    {"применено": [a["id"] for a in applied],
+                     "ждут перезапуска": need_restart},
+                    ip=handler.client_address[0])
+            handler._send_json(200, {"ok": True, "applied": applied,
+                                     "need_restart": need_restart})
             return _SENT
 
         @r.add("GET", "/")
@@ -1202,6 +1297,12 @@ class WorksServer(http.server.ThreadingHTTPServer):
                         '<option value="">👤 Лично (свой отчёт)</option>'
                         '<option value="%s">👥 За бригаду «%s» — отчёт один '
                         'на всех</option></select></label></p>'
+                        '<p><label>👥 Кто сдавал вместе с вами (имена через '
+                        'запятую): <input type="text" name="wc_names" '
+                        'maxlength="600" placeholder="Иванов И.И., '
+                        'Петров П.П., …"></label> '
+                        '<span class="hint">все, кто работал над отчётом '
+                        'бригады; при личной сдаче оставьте пустым</span></p>'
                         % (_e(_brg), _e(_brg)))
             else:
                 _cb = "/course/%s" % course["id"] if course else ""
@@ -1304,6 +1405,7 @@ class WorksServer(http.server.ThreadingHTTPServer):
             answers = {}
             files = {}
             brigade = ""
+            names = ""
             for k, v in data.items():
                 if k in ("task", "submit", "wc_prefill"):
                     continue
@@ -1313,12 +1415,14 @@ class WorksServer(http.server.ThreadingHTTPServer):
                     files[k] = v          # несколько файлов (firmware)
                 elif hasattr(v, "data") and hasattr(v, "name"):
                     files[k] = v          # загруженный файл
+                elif k == "wc_names":
+                    names = (v or "").strip()
                 elif k == "brigade":
                     brigade = (v or "").strip()
                 else:
                     answers[k] = v
             sub, err = handler._core.collect(tid, sid, answers, files,
-                                             brigade=brigade)
+                                             brigade=brigade, names=names)
             if err:
                 handler._redirect("/task/%s?error=%s" % (tid, urllib.parse.quote(err)))
             else:
@@ -1464,6 +1568,10 @@ class WorksServer(http.server.ThreadingHTTPServer):
                          '<p>Участники: %s</p>') % (
                     _e(sub["бригада"]),
                     _e(who.get("fio", "?") if who else "?"), _e(fios))
+                _nm = v.get("участники_имена") or []
+                if _nm:
+                    head += ('<p>👥 Указали участников: %s</p>'
+                             % _e(", ".join(_nm)))
             else:
                 head += '<p>👤 Личный отчёт</p>'
             head += ('<p>Версия %d · %s%s</p>'

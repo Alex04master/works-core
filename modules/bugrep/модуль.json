@@ -1,5 +1,6 @@
 {
   "id": "bugrep",
   "name": "🐞 Баг-репорты",
-  "api": 1
+  "api": 1,
+  "reload": "hot"
 }

@@ -1,0 +1,10 @@
+{
+  "id": "newmark",
+  "name": "Новое задание",
+  "version": "1.0.0",
+  "api": 1,
+  "kind": "python",
+  "reload": "hot",
+  "enabled": true,
+  "настройки": {}
+}

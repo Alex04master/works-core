@@ -1035,6 +1035,10 @@ def register(ctx):
             if names:
                 who_line = ('<p class="hint">Сдавали: %s</p>'
                             % _e(", ".join(names)))
+            _nm = v.get("участники_имена") or []
+            if _nm:
+                who_line += ('<p class="hint">Указали участников: %s</p>'
+                             % _e(", ".join(_nm)))
         body = (
             '<p><a href="/staff/task/%s">%s</a></p>'
             '<div class="staff-card"><h2>%s</h2>'
