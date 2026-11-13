@@ -17,6 +17,7 @@ tests/_tmp_*/
 tests/_browsertest/
 .code-index/
 mcp-code-index/
+.goosehints
 
 # OS
 Thumbs.db
