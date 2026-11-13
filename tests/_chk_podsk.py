@@ -267,6 +267,8 @@ try:
     need("if(j.ок)" in body and "if(j.ok)" not in body,
          "шторка читает поле «ок» кириллицей (репорт #1: сервер шлёт «ок», "
          "JS читал латинское j.ok — все ответы показывались как ошибка)")
+    need("html.dark .wc-ai-drawer" in body,
+         "тёмная тема: стили шторки адаптированы (html.dark)")
     # JS шторки обязан быть синтаксически корректен: падение скрипта =
     # «кнопка не работает» (обработчики вообще не вешаются)
     _m = re.search(r"<script>(\(function\(\)\{var d=document"
@@ -779,6 +781,27 @@ try:
          "pdf: текст фрагмента передан для подсветки")
     need("/_static/pdfjs/pdf.worker.min.js" in body,
          "pdf: воркер подключён")
+    need("pdflinks" in body and "getAnnotations" in body,
+         "pdf: слой кликабельных ссылок из аннотаций")
+    _ps = re.search(r"<script>(\(function\(\)\{var CFG=.*?)</script>",
+                    body, re.S)
+    need(_ps, "скрипт pdf-вьювера найден")
+    if _ps:
+        _pf = os.path.join(ROOT, "_pdfchk.js")
+        io.open(_pf, "w", encoding="utf-8").write(_ps.group(1))
+        try:
+            _np = subprocess.run(["node", "--check", _pf],
+                                 capture_output=True)
+            need(_np.returncode == 0,
+                 "node --check: скрипт pdf-вьювера корректен",
+                 _np.stderr.decode("utf-8", "replace")[-300:])
+        except OSError:
+            print("OK   node недоступен — проверка pdf-скрипта пропущена")
+        finally:
+            try:
+                os.remove(_pf)
+            except OSError:
+                pass
     code, h, body = get("/podskazki/файл/стенд_паспорт.pdf", jar=jar_s)
     need(code == 200 and body.startswith("%PDF"),
          "оригинальный pdf отдаётся по /podskazki/файл/")
