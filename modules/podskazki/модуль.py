@@ -32,6 +32,7 @@ import json
 import math
 import os
 import re
+import shutil
 import threading
 import time
 import urllib.error
@@ -44,6 +45,9 @@ MAX_SRC = 20 * 1024 * 1024  # 20 МБ на файл источника
 MAX_ZIP = 100 * 1024 * 1024        # размер ZIP-архива
 MAX_ZIP_FILES = 300                # файлов в одном архиве
 MAX_ZIP_UNPACK = 300 * 1024 * 1024  # суммарно распаковано за архив
+# версия извлечения текста: сменилась — «⚡ Только новое» само сделает
+# полную переобработку (иначе старые чанки без таблиц/картинок остались бы)
+ИЗВ_ВЕРСИЯ = "2"
 
 # Страница просмотра документации (клик по «📄 файл» в шторке)
 _VIEW_CSS = (
@@ -57,6 +61,12 @@ _VIEW_CSS = (
     '.wc-hit{background:#fff3b0;box-shadow:0 0 0 6px #fff3b0;'
     'border-radius:4px;animation:wcflash 1s ease-out 2}'
     '@keyframes wcflash{0%{background:#ffd54f}100%{background:#fff3b0}}'
+    '.wc-pic{max-width:100%;max-height:420px;border:1px solid #e0e0e0;'
+    'border-radius:6px;margin:6px 0;display:block}'
+    '.wc-page{display:inline-block;background:#eef1f4;color:#888;'
+    'border-radius:6px;padding:1px 8px;font-size:11px;margin:2px 0}'
+    '.wc-nopic{background:#fff3d6;border-radius:4px;padding:1px 6px;'
+    'color:#8a6d1a}'
     '</style>')
 TXT_EXT = (".txt", ".md", ".markdown", ".log", "")
 GOOD_EXT = (".txt", ".md", ".markdown", ".log", ".docx", ".pdf")
@@ -214,9 +224,71 @@ def register(ctx):
                         continue
                 return raw.decode("utf-8", "replace"), None
             if ext == ".docx":
+                doc = os.path.basename(path)
                 with zipfile.ZipFile(path) as z:
                     xml = z.read("word/document.xml").decode(
                         "utf-8", "replace")
+                    # картинки: blip-ссылки -> маркеры в тексте, сами
+                    # файлы распаковываем в источники_медиа/<док>/
+                    pics = {}
+                    try:
+                        rels = z.read(
+                            "word/_rels/document.xml.rels").decode(
+                            "utf-8", "replace")
+                        for m in re.finditer(
+                                r'Id="(rId\d+)"[^>]*Target="([^"]+)"',
+                                rels):
+                            t = m.group(2).lstrip("/")
+                            if "/media/" in t or t.startswith("media/"):
+                                pics[m.group(1)] = os.path.basename(t)
+                    except (KeyError, OSError, ValueError):
+                        pass
+                    media_dir = os.path.join(ctx.data_dir,
+                                             "источники_медиа", doc)
+                    zimg = [n for n in z.namelist()
+                            if n.startswith("word/media/")]
+                    if zimg:
+                        os.makedirs(media_dir, exist_ok=True)
+                        for n in zimg:
+                            with open(os.path.join(
+                                    media_dir, os.path.basename(n)),
+                                    "wb") as f:
+                                f.write(z.read(n))
+                    else:
+                        shutil.rmtree(media_dir, ignore_errors=True)
+                    nn = [0]
+
+                    def _blip(m):
+                        rid = re.search(r'r:embed="(rId\d+)"', m.group(0))
+                        fn = pics.get(rid.group(1), "") if rid else ""
+                        nn[0] += 1
+                        return "\n[Рисунок %d: %s]\n" % (
+                            nn[0], fn or "неизвестен")
+
+                    def _cell(c):
+                        t = re.sub(r"</w:p>", "\n", c)
+                        t = re.sub(r"<w:tab[^>]*/>", " ", t)
+                        t = html.unescape(re.sub(r"<[^>]+>", "", t))
+                        return " ".join(t.split())
+
+                    def _tbl(m):
+                        rows = []
+                        for tr in re.findall(r"<w:tr[ >].*?</w:tr>",
+                                             m.group(0), re.S):
+                            cells = [_cell(c) for c in re.findall(
+                                r"<w:tc[ >].*?</w:tc>", tr, re.S)]
+                            if any(cells):
+                                rows.append(" | ".join(cells))
+                        return "\n" + "\n".join(rows) + "\n"
+
+                    # сначала картинки, затем таблицы (изнутри — вложенные)
+                    xml = re.sub(r"<a:blip\b[^>]*>", _blip, xml)
+                    for _ in range(3):
+                        new = re.sub(r"<w:tbl>(?:(?!<w:tbl>).)*?</w:tbl>",
+                                     _tbl, xml, flags=re.S)
+                        if new == xml:
+                            break
+                        xml = new
                 xml = re.sub(r"</w:p>", "\n", xml)
                 xml = re.sub(r"<w:tab[^>]*/>", "\t", xml)
                 txt = html.unescape(re.sub(r"<[^>]+>", "", xml))
@@ -229,8 +301,28 @@ def register(ctx):
                                   "pypdf (только в инструменте, сервер "
                                   "его не требует)")
                 reader = PdfReader(path)
-                pages = [(p.extract_text() or "") for p in reader.pages]
-                return "\n\n".join(pages), None
+                parts = []
+                for i, p in enumerate(reader.pages, 1):
+                    try:  # layout сохраняет колонки и таблицы
+                        t = p.extract_text(extraction_mode="layout") or ""
+                    except Exception:
+                        t = p.extract_text() or ""
+                    n_img = 0
+                    try:
+                        xo = (p.get("/Resources") or {}).get("/XObject")
+                        if xo:
+                            xo = xo.get_object()
+                            n_img = sum(
+                                1 for k in xo
+                                if xo[k].get_object().get("/Subtype")
+                                == "/Image")
+                    except Exception:
+                        n_img = 0
+                    head = "[Страница %d]" % i
+                    if n_img:
+                        head += " [Рисунков: %d]" % n_img
+                    parts.append(head + "\n" + (t or "").strip())
+                return "\n\n".join(parts), None
             return None, "формат не поддерживается (txt, md, docx, pdf)"
         except Exception as ex:
             return None, "не прочитан: %s" % ex
@@ -274,6 +366,7 @@ def register(ctx):
                        if os.path.splitext(f)[1].lower() in GOOD_EXT)
         # старый индекс: переиспользуем чанки файлов без изменений
         old = _load_index() or {}
+        stale_ver = old.get("извлечение") != ИЗВ_ВЕРСИЯ
         old_chunks = {}
         for c in old.get("чанки", []):
             old_chunks.setdefault(c.get("ф"), []).append(
@@ -296,7 +389,8 @@ def register(ctx):
                 mt = os.path.getmtime(path)
             except OSError:
                 mt = None
-            reuse = (only_new and fn in old_chunks
+            reuse = (only_new and not stale_ver
+                     and fn in old_chunks
                      and mt is not None and old_mt.get(fn) == mt)
             if reuse:
                 for txt, vec, nrm in old_chunks[fn]:
@@ -356,6 +450,7 @@ def register(ctx):
             return
         report["обновлено"] = changed
         idx = {"модель": st["эмбеддер"], "построен": report["время"],
+               "извлечение": ИЗВ_ВЕРСИЯ,
                "файлы": {fn: os.path.getmtime(os.path.join(src, fn))
                          for fn in files},
                "чанки": chunks}
@@ -1029,6 +1124,9 @@ def register(ctx):
                                         os.path.abspath(p)]) \
                 == os.path.abspath(root) and os.path.isfile(p):
             os.remove(p)
+            shutil.rmtree(os.path.join(ctx.data_dir, "источники_медиа",
+                                       name),
+                          ignore_errors=True)
             try:
                 ctx.audit("подсказки: источник удалён", name,
                           handler=handler)
@@ -1083,6 +1181,36 @@ def register(ctx):
         parts = params.get("_parts", [])
         fname = os.path.basename(parts[0]) if parts else ""
         target = parts[1] if len(parts) > 1 else ""
+
+        def _media_src(fn):
+            p = os.path.join(ctx.data_dir, "источники_медиа", fname, fn)
+            return ("/podskazki/медиа/%s/%s"
+                    % (urllib.parse.quote(fname), urllib.parse.quote(fn))
+                    ) if fn and os.path.isfile(p) else ""
+
+        def _rich(txt):
+            """Маркеры извлечения -> HTML: картинки из docx, разделители
+            страниц pdf."""
+            txt = _e(txt)
+            txt = re.sub(r"\[Рисунок (\d+): ([^\]\n]+)\]",
+                         lambda m: (
+                             '<img class="wc-pic" loading="lazy" '
+                             'alt="Рисунок %s" src="%s">'
+                             % (m.group(1), _media_src(m.group(2).strip()))
+                         ) if _media_src(m.group(2).strip())
+                         else '<span class="wc-nopic">🖼 Рисунок %s: %s'
+                              '</span>' % (m.group(1),
+                                           m.group(2).strip()),
+                         txt)
+            txt = re.sub(r"\[Страница (\d+)\] ?\[Рисунков: \d+\]?",
+                         r'<span class="wc-page">— стр. \1 —</span>', txt)
+            txt = re.sub(r"\[Страница (\d+)\]",
+                         r'<span class="wc-page">— стр. \1 —</span>', txt)
+            txt = re.sub(r"\[Рисунков: (\d+)\]",
+                         r'<span class="wc-page">🖼 рисунков: \1</span>',
+                         txt)
+            return txt
+
         src = os.path.join(ctx.data_dir, "источники")
         path = os.path.join(src, fname)
         if not fname or fname in ("..", ".") or not os.path.isfile(path):
@@ -1102,7 +1230,8 @@ def register(ctx):
             for i, c in enumerate(blocks):
                 cls = ' class="wc-hit" id="wc-hit"' if i == hit_i else ""
                 rows.append('<div%s><div class="wc-doc-n">Фрагмент %d'
-                            '</div>%s</div>' % (cls, i + 1, _e(c.get("т", ""))))
+                            '</div>%s</div>' % (cls, i + 1,
+                                                _rich(c.get("т", ""))))
             inner = "".join(rows)
             note = '<p class="hint">📄 <b>%s</b> — документация стенда. %s</p>'
             if hit_i >= 0:
@@ -1125,12 +1254,35 @@ def register(ctx):
                 page_body = ('<p class="hint">📄 <b>%s</b> — документация '
                              'стенда (индекс ещё не собран, показан весь '
                              'текст).</p>' % _e(fname)
-                             + '<div class="wc-doc">%s</div>' % _e(text))
+                             + '<div class="wc-doc">%s</div>' % _rich(text))
         if hit_i >= 0:
             page_body += ('<script>var m=document.getElementById("wc-hit");'
                           'if(m)m.scrollIntoView({block:"center"});</script>')
         handler._send_html(ctx.render_page(
             "Документация: " + fname, page_body, extra_head=_VIEW_CSS))
+        return handler._SENT
+
+    # ── картинки из docx-источников ──────────────────────────────────
+    @ctx.add_route("GET", "/podskazki/медиа/", access="any")
+    def media_file(handler, params):
+        parts = params.get("_parts", [])
+        doc = os.path.basename(parts[0]) if parts else ""
+        fn = os.path.basename(parts[1]) if len(parts) > 1 else ""
+        root = os.path.abspath(os.path.join(ctx.data_dir,
+                                            "источники_медиа"))
+        p = os.path.abspath(os.path.join(root, doc, fn))
+        mime = {".png": "image/png", ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg", ".gif": "image/gif",
+                ".bmp": "image/bmp", ".webp": "image/webp",
+                ".tif": "image/tiff", ".tiff": "image/tiff"}.get(
+            os.path.splitext(fn)[1].lower())
+        if (not doc or not fn or mime is None
+                or not os.path.isfile(p)
+                or os.path.commonpath([p, root]) != root):
+            handler._send_text(404, "Not Found")
+            return handler._SENT
+        with open(p, "rb") as f:
+            handler._send_response(200, mime, f.read(), encode=False)
         return handler._SENT
 
     # ── фрагмент на страницах ────────────────────────────────────────

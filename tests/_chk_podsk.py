@@ -8,6 +8,7 @@
 Мок Ollama: /api/embed — гистограмма слов (детерминированная), /api/chat
 — фиксированный ответ, /api/tags — список моделей.
 """
+import base64
 import hashlib
 import io
 import json
@@ -517,7 +518,8 @@ try:
               {"url": "http://127.0.0.1:%d" % OLLAMA_PORT,
                "модель": "qwen3:1.7b", "эмбеддер": "bge-m3",
                "лимит_час": "0", "num_predict": "220", "топ_k": "4",
-               "мин_оценка": "0.22", "промт": "", "включено": "1"},
+               "мин_оценка": "0.22", "промт": "", "включено": "1",
+               "режим": "лок"},
               jar=jar)
 
     # 1) журнал-словарь вместо списка: вопрос не падает, журнал чинится
@@ -676,6 +678,68 @@ try:
     code, h, body = get("/podskazki", jar=jar)
     need("Догрузка (" in body and "обновлено 2" in body,
          "панель показывает итог догрузки")
+
+    # ── docx: таблицы и картинки не теряются ─────────────────────────
+    _PNG = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8"
+        "z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+    _docxml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/'
+        'wordprocessingml/2006/main" xmlns:a="http://schemas.'
+        'openxmlformats.org/drawingml/2006/main" xmlns:r="http://'
+        'schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<w:body>'
+        '<w:p><w:r><w:t>Технические параметры прибора приведены '
+        'в таблице.</w:t></w:r></w:p>'
+        '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Параметр</w:t></w:r></w:p>'
+        '</w:tc><w:tc><w:p><w:r><w:t>Значение</w:t></w:r></w:p></w:tc>'
+        '</w:tr><w:tr><w:tc><w:p><w:r><w:t>Ток потребления</w:t></w:r>'
+        '</w:p></w:tc><w:tc><w:p><w:r><w:t>60 мкА</w:t></w:r></w:p>'
+        '</w:tc></w:tr></w:tbl>'
+        '<w:p><w:r><w:drawing><a:blip r:embed="rId7"/></w:drawing></w:r>'
+        '<w:r><w:t>Схема подключения шлейфа показана на рисунке.'
+        '</w:t></w:r></w:p>'
+        '</w:body></w:document>')
+    _rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/'
+        'package/2006/relationships"><Relationship Id="rId7" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+        'relationships/image" Target="media/image1.png"/></Relationships>')
+    _buf = io.BytesIO()
+    with zipfile.ZipFile(_buf, "w") as z:
+        z.writestr("word/document.xml", _docxml)
+        z.writestr("word/_rels/document.xml.rels", _rels)
+        z.writestr("word/media/image1.png", _PNG)
+    code, h, body = mp_post("/podskazki/загрузка", {},
+                            {"файлы": ("стенд_таблицы.docx",
+                                       _buf.getvalue())}, jar=jar)
+    form_post("/podskazki/догрузить", {}, jar=jar)
+    for _ in range(60):
+        code, h, body = get("/podskazki/прогресс", jar=jar)
+        prog = json.loads(body)
+        if prog.get("фаза") in ("готово", "ошибка"):
+            break
+        time.sleep(0.5)
+    need(prog.get("фаза") == "готово", "догрузка docx завершилась",
+         str(prog))
+    code, h, body = get("/podskazki/просмотр/стенд_таблицы.docx", jar=jar_s)
+    need("Ток потребления | 60 мкА" in body,
+         "docx: таблица сохранена в тексте (ячейки через « | »)")
+    need('<img class="wc-pic"' in body and 'alt="Рисунок 1"' in body,
+         "docx: картинка вставлена в просмотр")
+    code, h, body = get("/podskazki/медиа/стенд_таблицы.docx/image1.png",
+                        jar=jar_s)
+    need(code == 200 and "PNG" in body[:10],
+         "картинка из docx отдаётся по /podskazki/медиа/")
+    code, h, body = json_post("/podskazka",
+                              {"вопрос": "какой ток потребления прибора"},
+                              jar=jar_s)
+    j13 = json.loads(body)
+    need(j13.get("ок")
+         and "стенд_таблицы.docx" in (j13.get("источники") or []),
+         "docx с таблицей участвует в поиске", body[:200])
 
     # удаление источника
     code, h, body = form_post("/podskazki/удалить",
