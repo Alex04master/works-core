@@ -236,7 +236,7 @@ try {
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   teacher created brigade record' } else { Write-Output 'FAIL teacher created brigade record'; $script:fail++ }
   $cpb = curl.exe -s -b "$PWD\_staff.txt" 'http://localhost:8099/staff/course/c1'
   Chk 'brigade edit input in students table' ($cpb -match 'student_brigade')
-  Chk 'rename/dissolve forms present' ($cpb -match 'brigade_rename' -and $cpb -match 'brigade_delete')
+  Chk 'rename/dissolve in editor' ($cp -match 'wc-br-name' -and $cp -match 'wc-br-del')
   curl.exe -s -b "$PWD\_staff.txt" -d 'old=EDIT-1' -d 'new=EDIT-2' -d 'course=c1' 'http://localhost:8099/staff/brigade_rename' | Out-Null
   python -X utf8 tests\_chk_brig7.py
   if ($LASTEXITCODE -eq 0) { Write-Output 'OK   brigade renamed' } else { Write-Output 'FAIL brigade renamed'; $script:fail++ }

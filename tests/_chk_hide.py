@@ -18,6 +18,7 @@ import urllib.parse
 import urllib.request
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+import os  # noqa: E402
 STORE = "_hidecheck"
 BASE = "http://localhost:8095"
 ok = True
@@ -32,7 +33,16 @@ def need(c, m, ctx=""):
 
 if __import__("os").path.isdir(STORE):
     shutil.rmtree(STORE, ignore_errors=True)
-shutil.copytree(r"E:\AI\works-core\данные", STORE)
+src = ""
+for cand in (r"E:\AI\works-core\данные",
+             r"D:\AI\works-core\данные"):
+    if os.path.isdir(cand):
+        src = cand
+        break
+if not src:
+    print("SKIP: исходные данные не найдены (E:/D:)")
+    sys.exit(0)
+shutil.copytree(src, STORE)
 
 proc = subprocess.Popen(
     [sys.executable, "-X", "utf8", "server.py", "--port", "8095",

@@ -89,7 +89,7 @@ need('"scheme"' in tp,
      "студент: импорт знает поле файла отчёта (KEY)")
 need("wc-sim-draft_" in tp and "DOMContentLoaded" in tp,
      "студент: схема хранится в черновике и восстанавливается")
-need("Черновик localStorage главнее" in tp,
+need("if(!localStorage.getItem(K))" in tp and "/api/draft" in tp,
      "задание: черновик формы важнее серверного предзаполнения")
 
 # 4) абсолютный URL — без изменений

@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
-"""Включение/отключение бригады преподавателем.
+"""Закрытие бригады для сдач (модель редактора бригад 1.4+).
 
 Запуск: python -X utf8 tests/_chk_brig9.py  (сервер с _teststore на 8099).
-Проверки: /staff/brigade_state off/on; отключённая бригада — сдача за
-бригаду отклонена, вступление закрыто, метки на странице курса и доске,
-состав сохраняется; включённая — работает как раньше; события в аудите.
+Проверки: сдача за бригаду; POST /staff/brigades_save (off=true) —
+флаг «бригады_откл», чекбокс «закрыта для сдач» checked на панели,
+сдача за бригаду отклонена («отключена преподавателем»), метка на доске;
+brigades_save (off=false) — всё возвращается; аудит «сохранены бригады».
 """
 import glob
 import io
 import json
 import os
-import re
 import subprocess
 import sys
 import urllib.parse
@@ -50,10 +50,6 @@ def audit_actions():
     return acts
 
 
-FORM = {"width": "24", "length": "18", "height": "4.2",
-        "detector_type": "ИП 212 (дымовой)", "detectors_num": "6",
-        "loops": "2", "justification": "brig9 test"}
-
 # ── подготовка: студент s1 в бригаде BR9 (как преподаватель) ──────────
 curl("-c", "_br9_st.txt", "-d", "pass=x", BASE + "/_staff_login")
 curl("-c", "_br9_ck.txt", "-d", "student=s1", "-d", "next=/",
@@ -73,97 +69,91 @@ db = registry()
 s1 = next(s for s in db["студенты"] if s["id"] == "s1")
 need((s1.get("бригада") or "") == "BR9", "подготовка: s1 в бригаде BR9")
 
-# сдача за бригаду до отключения — работает
-body = ["-b", "_br9_ck.txt", "-F", "task=t1"]
-for k, v in FORM.items():
-    body += ["-F", "%s=%s" % (k, urllib.parse.quote(v))]
-body += ["-F", "brigade=BR9"]
-r = subprocess.run(["curl.exe", "-s", "-i"] + body + [BASE + "/api/submit"],
-                   capture_output=True)
-hdr = r.stdout.decode("utf-8", "replace")
-need("Location: /mysub/t1" in hdr, "до отключения: сдача за бригаду OK",
-     hdr[:160])
+# редактор бригад на странице курса
+cp = curl("-b", "_br9_st.txt", BASE + "/staff/course/c1")
+need("wc-br-name" in cp and "wc-br-del" in cp and "wc-br-save" in cp,
+     "панель: редактор бригад (переименование + расформировать + сохранить)")
+need("закрыта для сдач" in cp, "панель: чекбокс «закрыта для сдач»")
 
-# ── отключение бригады преподавателем ─────────────────────────────────
-curl("-b", "_br9_st.txt", "-d", "course=c1", "-d", "name=BR9",
-     "-d", "act=off", BASE + "/staff/brigade_state")
+# ── до отключения: сдача за бригаду работает ──────────────────────────
+hdr = curl("-s", "-i", "-b", "_br9_ck.txt", "-F", "task=t1",
+           "-F", "justification=brig9 before", BASE + "/api/submit")
+need("Location: /mysub/t1" in hdr, "до отключения: сдача за бригаду OK",
+     hdr[:120])
+
+# ── отключение бригады: brigades_save off=true ────────────────────────
+payload = {"rows": [{"old": "BR9", "name": "BR9", "off": True,
+                     "members": [{"sid": "s1", "fio": "Иванов И.И."}]}],
+           "removed": []}
+res = curl("-b", "_br9_st.txt", "-d", "course=c1",
+           "--data-urlencode", "data=" + json.dumps(payload,
+                                                    ensure_ascii=False),
+           BASE + "/staff/brigades_save")
+need('"ok": true' in res, "brigades_save off=true применён", res[:120])
 db = registry()
 need(db.get("бригады_откл", {}).get("BR9") is True,
-     "отключена: флаг в реестре")
+     "реестр: флаг «бригады_откл.BR9»")
 
-sp = curl("-b", "_br9_st.txt", BASE + "/staff/course/c1")
-need("⛔ отключена" in sp and "brigade_state" in sp,
-     "панель: метка и кнопки включения/отключения")
-need("▶️ Включить" in sp, "панель: кнопка «Включить» у отключённой")
-need('style="margin:8px 0;opacity:.55"' in sp, "панель: блок бригады приглушён")
+cp = curl("-b", "_br9_st.txt", BASE + "/staff/course/c1")
+need("закрыта для сдач" in cp and "checked" in cp,
+     "панель: чекбокс «закрыта для сдач» отмечен")
 
-cp = curl("-b", "_br9_ck.txt", BASE + "/course/c1")
-m = re.search(r"<li>(?:(?!</li>).)*BR9(?:(?!</li>).)*</li>", cp)
-need(bool(m) and "отключена" in m.group(0) and 'value="join"' not in m.group(0),
-     "страница курса: BR9 помечена, вступления нет", m.group(0) if m else "")
-need("отключена преподавателем — сдача за бригаду закрыта" in cp,
-     "страница курса: предупреждение в «Моя бригада»")
+# личная сдача при отключённой бригаде — разрешена
+hdr = curl("-s", "-i", "-b", "_br9_ck.txt", "-F", "task=t1",
+           "-F", "justification=brig9 personal", BASE + "/api/submit")
+need("Location: /mysub/t1" in hdr,
+     "отключённая бригада: личная сдача разрешена", hdr[:120])
+d = registry()
+last = d["сдачи"].get("t1__s1")
+need(bool(last) and last["versions"][-1].get("answers", {}).get("justification") == "brig9 personal",
+     "личная сдача записана (новая версия, без бригадного режима)")
 
+# принудительная бригадная сдача — отклонена ядром
+hdr = curl("-s", "-i", "-b", "_br9_ck.txt", "-F", "task=t1",
+           "-F", "justification=brig9 forced", "-F", "brigade=BR9",
+           BASE + "/api/submit")
+need("Location: /task/t1?error=" in hdr,
+     "бригадная сдача за отключённую бригаду отклонена", hdr[:120])
+qs = urllib.parse.unquote(hdr)
+need("отключена преподавателем" in qs and "лично" in qs,
+     "ошибка: объяснение студенту")
+tp = curl("-b", "_br9_ck.txt", BASE + "/task/t1")
+need("отключена преподавателем" in tp and 'name="brigade"' not in tp,
+     "страница задания: пояснение, бригадное поле скрыто")
+cp2 = curl("-b", "_br9_ck.txt", BASE + "/course/c1")
+need("сдача за бригаду закрыта" in cp2,
+     "страница курса: у своей бригады пометка «закрыта для сдач»")
 bd = curl("-b", "_br9_st.txt", BASE + "/board")
 need("· отключена" in bd, "доска: бригада помечена отключённой")
 
-# сдача за отключённую бригаду — отказ
-r = subprocess.run(["curl.exe", "-s", "-i"] + body + [BASE + "/api/submit"],
-                   capture_output=True)
-hdr = r.stdout.decode("utf-8", "replace")
-need("Location: /task/t1?error=" in hdr,
-     "сдача за отключённую бригаду: отказ", hdr[:160])
-err = urllib.parse.unquote_plus(hdr.split("Location: /task/t1?error=")[-1]
-                                .split("\r\n")[0]) if "error=" in hdr else ""
-need("отключена преподавателем" in err and "лично" in err,
-     "текст отказа понятен", err)
-
-tp = curl("-b", "_br9_ck.txt", BASE + "/task/t1")
-need("отключена преподавателем" in tp and 'name="brigade"' not in tp,
-     "страница задания: только личная сдача, выбор бригады скрыт")
-
-# вступление в отключённую бригаду другим студентом — отказ
-# (сначала убираем s2 из текущей бригады, чтобы join был возможен)
-curl("-c", "_br9_ck2.txt", "-d", "student=s2", "-d", "next=/",
-     BASE + "/_login")
-curl("-b", "_br9_st.txt", "-d", "student=s2", "-d", "course=c1",
-     "-d", "brigade=", BASE + "/staff/student_brigade")
-j = curl("-sL", "-b", "_br9_ck2.txt", "-d", "course=c1", "-d", "act=join",
-         "-d", "name=BR9", BASE + "/brigade")
-need("Бригада «BR9» отключена преподавателем" in j,
-     "вступление в отключённую бригаду: отказ")
-
-# смена состава сохраняется: преподаватель может перевести студента
-curl("-b", "_br9_st.txt", "-d", "student=s2", "-d", "course=c1",
-     "-d", "brigade=BR9", BASE + "/staff/student_brigade")
-db = registry()
-need((next(s for s in db["студенты"] if s["id"] == "s2").get("бригада")
-      or "") == "BR9", "отключённая: состав можно править")
-
-# ── включение обратно ─────────────────────────────────────────────────
-curl("-b", "_br9_st.txt", "-d", "course=c1", "-d", "name=BR9",
-     "-d", "act=on", BASE + "/staff/brigade_state")
+# ── включение бригады: brigades_save off=false ────────────────────────
+payload["rows"][0]["off"] = False
+res = curl("-b", "_br9_st.txt", "-d", "course=c1",
+           "--data-urlencode", "data=" + json.dumps(payload,
+                                                    ensure_ascii=False),
+           BASE + "/staff/brigades_save")
+need('"ok": true' in res, "brigades_save off=false применён", res[:120])
 db = registry()
 need(not db.get("бригады_откл", {}).get("BR9"), "включена: флаг снят")
-need((next(s for s in db["студенты"] if s["id"] == "s1").get("бригада")
-      or "") == "BR9", "включена: состав бригады сохранён")
-sp2 = curl("-b", "_br9_st.txt", BASE + "/staff/course/c1")
-need("⏸ Отключить" in sp2, "панель: кнопка «Отключить» у включённой")
-cp2 = curl("-b", "_br9_ck.txt", BASE + "/course/c1")
-need('value="leave"' in cp2, "страница курса: бригада снова активна")
-
-r = subprocess.run(["curl.exe", "-s", "-i"] + body + [BASE + "/api/submit"],
-                   capture_output=True)
-hdr = r.stdout.decode("utf-8", "replace")
+s1 = next(s for s in db["студенты"] if s["id"] == "s1")
+need((s1.get("бригада") or "") == "BR9", "включена: состав сохранён")
+cp = curl("-b", "_br9_st.txt", BASE + "/staff/course/c1")
+need('wc-br-off" data-i="0" checked' not in cp,
+     "панель: чекбокс снова не отмечен")
+hdr = curl("-s", "-i", "-b", "_br9_ck.txt", "-F", "task=t1",
+           "-F", "justification=brig9 after", "-F", "brigade=BR9",
+           BASE + "/api/submit")
 need("Location: /mysub/t1" in hdr, "сдача за включённую бригаду: OK",
-     hdr[:160])
+     hdr[:120])
+d = registry()
+last = d["сдачи"].get("t1__s1")
+need(bool(last) and last.get("бригада") == "BR9",
+     "сдача снова за бригаду (participants)")
 
 acts = audit_actions()
-need("бригада отключена" in acts and "бригада включена" in acts,
-     "аудит: события отключения/включения")
+need("сохранены бригады" in acts, "аудит: «сохранены бригады»")
 
-for p in ("_br9_st.txt", "_br9_ck.txt", "_br9_ck2.txt"):
-    if os.path.exists(p):
-        os.remove(p)
+for p in ("_br9_st.txt", "_br9_ck.txt"):
+    os.remove(p)
 print("BRIG9 OK" if ok else "BRIG9 FAIL")
 sys.exit(0 if ok else 1)

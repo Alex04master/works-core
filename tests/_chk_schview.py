@@ -47,6 +47,58 @@ except urllib.error.HTTPError as e:
     print("login:", e.code)
 
 ok = True
+# ── подготовка: эталон + сдача со схемой .vlx от s1 ──────────────
+s1_jar = http.cookiejar.CookieJar()
+s1_op = urllib.request.build_opener(
+    NR(), urllib.request.HTTPCookieProcessor(s1_jar))
+try:
+    s1_op.open(urllib.request.Request(
+        BASE + "/_login",
+        data=urllib.parse.urlencode({"student": "s1", "next": "/"}).encode(),
+        method="POST"), timeout=10)
+except urllib.error.HTTPError as e:
+    print("login s1:", e.code)
+for comp, cnt in [("led", "1"), ("resistor", "1")]:
+    fd = urllib.parse.urlencode({"component": comp, "count": cnt}).encode()
+    try:
+        op.open(urllib.request.Request(
+            BASE + "/staff/schema_etalon/t1", data=fd, method="POST"),
+            timeout=10)
+    except urllib.error.HTTPError:
+        pass
+bnd = "----wc"
+vlx = ('{"format":"velxio-project","version":1,'
+       '"components":[{"metadataId":"led"},{"metadataId":"resistor"}],'
+       '"wires":[],"fileGroups":{}}')
+mp = (("--%s\r\nContent-Disposition: form-data; name=\"task\"\r\n\r\n"
+       "t1\r\n" % bnd).encode("utf-8")
+      + ("--%s\r\nContent-Disposition: form-data; name=\"width\"\r\n\r\n"
+         "24\r\n" % bnd).encode("utf-8")
+      + ("--%s\r\nContent-Disposition: form-data; name=\"length\"\r\n\r\n"
+         "18\r\n" % bnd).encode("utf-8")
+      + ("--%s\r\nContent-Disposition: form-data; name=\"height\"\r\n\r\n"
+         "4.2\r\n" % bnd).encode("utf-8")
+      + ("--%s\r\nContent-Disposition: form-data; name=\"detector_type\"\r\n"
+         "\r\nИП\r\n" % bnd).encode("utf-8")
+      + ("--%s\r\nContent-Disposition: form-data; name=\"detectors_num\"\r\n"
+         "\r\n6\r\n" % bnd).encode("utf-8")
+      + ("--%s\r\nContent-Disposition: form-data; name=\"loops\"\r\n\r\n"
+         "2\r\n" % bnd).encode("utf-8")
+      + ("--%s\r\nContent-Disposition: form-data; name=\"justification\"\r\n"
+         "\r\nschview\r\n" % bnd).encode("utf-8")
+      + ("--%s\r\nContent-Disposition: form-data; name=\"scheme\"; "
+         "filename=\"проект.vlx\"\r\nContent-Type: application/json\r\n\r\n"
+         % bnd).encode("utf-8")
+      + vlx.encode("utf-8")
+      + ("\r\n--%s--\r\n" % bnd).encode("utf-8"))
+try:
+    s1_op.open(urllib.request.Request(
+        BASE + "/api/submit", data=mp, method="POST",
+        headers={"Content-Type": "multipart/form-data; boundary=" + bnd}),
+        timeout=10)
+except urllib.error.HTTPError:
+    pass
+time.sleep(1)
 
 
 def need(c, m, ctx=""):
